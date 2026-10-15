@@ -11,7 +11,7 @@ services:
 
 ## 이미지 하나, 진입점 셋
 
-api, worker, migrate는 같은 이미지에서 실행 명령만 다르다(`node dist/api.js`, `node dist/worker.js`, `node dist/migrate.js`). 한 번 빌드하면 세 프로세스가 항상 같은 버전의 코드로 돌고, 스키마와 SQL 정의를 한 벌로 공유한다.
+api, worker, migrate는 같은 이미지에서 실행 명령만 다르다(`node dist/main-api.js`, `node dist/main-worker.js`, `node dist/migrate.js`). 한 번 빌드하면 세 프로세스가 항상 같은 버전의 코드로 돌고, 스키마와 SQL 정의를 한 벌로 공유한다.
 
 ## 마이그레이션은 별도 서비스로 실행한다
 

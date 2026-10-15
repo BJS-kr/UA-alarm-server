@@ -19,7 +19,7 @@ SIGTERM
 - 배포 때마다 일어나는 일이다. 이 경로가 없으면 배포할 때마다 쥐고 있던 건이 전부 결과 미확정이 되어 대기와 조회를 거친다.
 - `stop_grace_period: 30s`로 둔다. Docker 기본값 10초는 HTTP 타임아웃과 같아 마무리가 잘릴 수 있다.
 - 유예 시간을 넘기면 Docker가 SIGKILL을 보내고 출구 2로 합류한다.
-- 신호가 Node 프로세스까지 도달해야 한다. `npm start`나 셸 형식 `CMD`는 신호를 전달하지 않으므로 exec 형식(`CMD ["node", "dist/worker.js"]`)과 compose의 `init: true`를 쓴다.
+- 신호가 Node 프로세스까지 도달해야 한다. `npm start`나 셸 형식 `CMD`는 신호를 전달하지 않으므로 exec 형식(`CMD ["node", "dist/main-worker.js"]`)과 compose의 `init: true`를 쓴다.
 
 ## 출구 2: 잠금 해제 (그 밖의 모든 경우)
 

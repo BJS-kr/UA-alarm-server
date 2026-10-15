@@ -35,7 +35,7 @@ src/
 
 drizzle/                  drizzle-kit이 생성한 마이그레이션 SQL
 docker/
-  postgres/init.sql       DB 계정과 권한 (ADR-0025)
+  postgres/init.sh        DB 계정과 권한 (ADR-0025)
   prometheus/             monitoring 프로필 설정 (ADR-0027)
 test/
   unit/                   순수 로직, 변이 테스팅 대상 (ADR-0034, 0035)
