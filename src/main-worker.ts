@@ -4,7 +4,10 @@ import { describeConfig, loadConfig } from './shared/config/app-config';
 import { ManagementServer } from './shared/health/management-server';
 import { AppLogger } from './shared/logging/app-logger';
 import { logContext } from './shared/logging/log-context';
-import { installProcessGuardrail } from './shared/runtime/process-guardrail';
+import {
+  installProcessGuardrail,
+  toError,
+} from './shared/runtime/process-guardrail';
 import { newWorkerId } from './worker/lifecycle/worker-identity';
 import { WorkerRuntime } from './worker/runtime/worker-runtime';
 import { WorkerModule } from './worker/worker.module';
@@ -22,7 +25,7 @@ async function bootstrap(workerId: number): Promise<void> {
     // 원인 오류가 없을 때 undefined를 넘기면 빈 로그 줄이 하나 더 찍힌다.
     const isCauseKnown = error !== undefined;
     if (isCauseKnown) {
-      logger.fatal(reason, error instanceof Error ? error : String(error));
+      logger.fatal(reason, toError(error));
     } else logger.fatal(reason);
     process.exit(1);
   };

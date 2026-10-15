@@ -177,15 +177,15 @@ describe('마스킹 규칙 (ADR-0028)', () => {
     );
   });
 
-  it('문자열이 아닌 값과 Error는 그대로 둔다', () => {
-    const error = new Error('x');
+  it('문자열이 아닌 값은 그대로 두고, Error는 글을 가린 일반 객체로 바꾼다', () => {
+    const error = new Error('code 1234');
 
     expect(maskSensitive({ body: 1234, token: null, nested: error })).toEqual({
       body: 1234,
       token: null,
-      nested: error,
+      nested: expect.objectContaining({ name: 'Error', message: 'code ****' }),
     });
-    expect(maskSensitive(error)).toBe(error);
+    expect(maskSensitive(error)).not.toBeInstanceOf(Error);
     expect(maskSensitive('본문 1234')).toBe('본문 1234');
   });
 });

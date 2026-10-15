@@ -13,6 +13,7 @@ const COMPLETION_TEST = 'test/integration/completion-and-cancel.spec.ts';
 const FAILOVER_TEST = 'test/integration/failover.spec.ts';
 const FLOW_TEST = 'test/integration/worker-flow.spec.ts';
 const API_TEST = 'test/integration/api.spec.ts';
+const LOGGING_TEST = 'test/unit/shared/config-and-logging.spec.ts';
 
 export const SABOTAGES = [
   {
@@ -312,5 +313,25 @@ export const SABOTAGES = [
     replace: '        this.lastConfirmedAt = process.hrtime.bigint();',
     test: FAILOVER_TEST,
     name: '생존 신호를 보낸 직후 멈췄다 깨어나면',
+  },
+  {
+    id: 'S30',
+    adr: '0028',
+    what: '구조화 필드 안의 Error를 마스킹하지 않고 그대로 넘긴다',
+    file: 'src/shared/logging/masking.ts',
+    find: '  if (isError) return maskError(value);',
+    replace: '  if (isError) return value;',
+    test: LOGGING_TEST,
+    name: '구조화 필드 안의 오류도 가린다',
+  },
+  {
+    id: 'S31',
+    adr: '0028',
+    what: '오류를 넘긴 로그의 error 필드를 Nest 기본 직렬화(글 그대로)로 되돌린다',
+    file: 'src/shared/logging/app-logger.ts',
+    find: '    return maskError(error);',
+    replace: '    return super.serializeError(error);',
+    test: LOGGING_TEST,
+    name: '오류를 넘긴 로그는 message, stack, detail과 cause의 숫자를 가린다',
   },
 ];

@@ -1,6 +1,6 @@
 import { ConsoleLogger, LogLevel } from '@nestjs/common';
 import { logContext } from './log-context';
-import { maskSensitive } from './masking';
+import { maskError, maskFreeText, maskSensitive, maskStack } from './masking';
 
 export function logLevelsFor(level: 'info' | 'debug'): LogLevel[] {
   return level === 'debug'
@@ -43,14 +43,26 @@ export class AppLogger extends ConsoleLogger {
     message: unknown,
     options: JsonLogOptions,
   ): JsonLogObject {
+    // 여러 줄 메시지의 스택은 Nest가 스택으로 알아보지 못해 context 자리에 넣는다. 그래서 context도 스택처럼 가린다.
     const masked: JsonLogOptions = {
       ...options,
+      context:
+        typeof options.context === 'string'
+          ? maskStack(options.context)
+          : options.context,
+      errorStack:
+        typeof options.errorStack === 'string'
+          ? maskStack(options.errorStack)
+          : options.errorStack,
       params: options.params
         ? (maskSensitive(options.params) as Record<string, unknown>)
         : undefined,
     };
+    // 메시지는 우리가 쓴 상수이거나, 오류를 첫 인자로 넘겼을 때 그 오류의 글이다. 뒤의 경우를 위해 숫자를 가린다.
     const logObject = super.getJsonLogObject(
-      maskSensitive(message),
+      typeof message === 'string'
+        ? maskFreeText(message)
+        : maskSensitive(message),
       masked,
     ) as JsonLogObject;
     const ctx = logContext.getStore();
@@ -64,5 +76,10 @@ export class AppLogger extends ConsoleLogger {
     }
 
     return logObject;
+  }
+
+  /** 오류를 넘긴 로그(`logger.error(msg, error)`)의 error 필드. 기본 직렬화는 글을 그대로 옮긴다. */
+  protected serializeError(error: Error): Record<string, unknown> {
+    return maskError(error);
   }
 }

@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { currentTraceId } from '../../shared/logging/log-context';
+import { toError } from '../../shared/runtime/process-guardrail';
 import { Problem, ProblemException, ProblemType } from './problem';
 
 /**
@@ -27,7 +28,7 @@ export class ProblemDetailsFilter implements ExceptionFilter {
     if (isServerFault) {
       this.logger.error(
         'Unhandled error while handling a request',
-        exception instanceof Error ? exception : String(exception),
+        toError(exception),
       );
     }
 

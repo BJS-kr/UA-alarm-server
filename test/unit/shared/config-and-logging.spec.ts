@@ -3,6 +3,7 @@ import {
   describeConfig,
   loadConfig,
 } from '../../../src/shared/config/app-config';
+import { AppLogger } from '../../../src/shared/logging/app-logger';
 import {
   maskDigits,
   maskPhone,
@@ -108,6 +109,90 @@ describe('로그 마스킹 (ADR-0028)', () => {
       list: [{ body: '****' }],
     });
     expect(original.body).toBe('코드 9876');
+  });
+});
+
+describe('오류 로그 마스킹 (ADR-0028)', () => {
+  const secretText = '인증번호 482913 입니다. 010-1234-5678';
+
+  /** DB 드라이버처럼 실패한 행의 값을 detail에 담고, ORM처럼 바인딩 값을 message에 담은 오류. */
+  function failedQueryError(): Error {
+    const driverError = Object.assign(
+      new Error('duplicate key value violates unique constraint'),
+      { code: '23505', detail: `Failing row contains (7, ${secretText}).` },
+    );
+
+    return new Error(
+      `Failed query: insert into deliveries values ($1)\nparams: ${secretText}`,
+      { cause: driverError },
+    );
+  }
+
+  /** 로거가 쓴 JSON 줄들을 모은다. */
+  function captureLines(write: (logger: AppLogger) => void): string {
+    const lines: string[] = [];
+    const capture = (chunk: string | Uint8Array): boolean => {
+      lines.push(String(chunk));
+
+      return true;
+    };
+    const stdout = jest
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(capture);
+    const stderr = jest
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(capture);
+
+    try {
+      write(new AppLogger('info', 'Test'));
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+
+    return lines.join('');
+  }
+
+  function expectMasked(output: string): void {
+    expect(output).not.toContain('482913');
+    expect(output).not.toContain('1234-5678');
+    expect(output).toContain('******');
+  }
+
+  it('오류를 넘긴 로그는 message, stack, detail과 cause의 숫자를 가린다', () => {
+    const output = captureLines((logger) =>
+      logger.error('Request failed', failedQueryError()),
+    );
+    const line = JSON.parse(output) as {
+      error: { stack: string; cause: { code: string } };
+    };
+
+    expectMasked(output);
+    // 원인을 찾는 데 필요한 오류 코드와 호출 위치는 남긴다.
+    expect(line.error.cause.code).toBe('23505');
+    expect(line.error.stack).toMatch(/\n\s+at .+:\d+:\d+/);
+  });
+
+  it('구조화 필드 안의 오류도 가린다', () => {
+    const output = captureLines((logger) =>
+      logger.error('Endpoint failed', {
+        url: '/metrics',
+        error: failedQueryError(),
+      }),
+    );
+
+    expectMasked(output);
+    expect(output).toContain('23505');
+  });
+
+  it('오류를 첫 인자로 넘기거나 스택 문자열로 넘겨도 가린다', () => {
+    const error = failedQueryError();
+    const output = captureLines((logger) => {
+      logger.error(error);
+      logger.error('Failed', error.stack);
+    });
+
+    expectMasked(output);
   });
 });
 
