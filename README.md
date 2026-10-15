@@ -39,7 +39,7 @@ docker compose --profile monitoring up
 
 호스트에는 Docker만 있으면 됩니다.
 
-린트(ESLint), 포맷 확인(Prettier), 단위·통합 테스트 155개(단위 102, 통합 53)를 차례로 돌립니다. 실제 워커 프로세스를 `SIGSTOP`으로 멈추는 테스트는 Linux에서만 돌기 때문에, 테스트 컨테이너에서 실행합니다.
+린트(ESLint), 포맷 확인(Prettier), 단위·통합 테스트 174개(단위 113, 통합 61)를 차례로 돌립니다. 실제 워커 프로세스를 `SIGSTOP`으로 멈추는 테스트는 Linux에서만 돌기 때문에, 테스트 컨테이너에서 실행합니다.
 
 ```bash
 docker compose --profile test run --rm test
@@ -51,7 +51,7 @@ docker compose --profile test run --rm test
 docker compose --profile test run --rm test npm run test:mutation
 ```
 
-고의 결함 목록. 장애 대비 장치(펜싱, 무효 선언, 발송 직전 확인, 서킷 브레이커 등)와 꺼내기·완료 판정의 SQL을 하나씩 빼고, 그 장치가 막던 장애를 재현하는 테스트가 실제로 실패하는지 확인합니다. 장치가 있을 때 막는 테스트와 짝을 이뤄 "있으면 막고, 빼면 깨진다"를 둘 다 보여 줍니다. 최근 결과는 29개 중 29개 검출입니다. 장치별 표는 [docs/testing.md](docs/testing.md)에 있습니다.
+고의 결함 목록. 장애 대비 장치(펜싱, 무효 선언, 발송 직전 확인, 서킷 브레이커 등)와 꺼내기·완료 판정의 SQL을 하나씩 빼고, 그 장치가 막던 장애를 재현하는 테스트가 실제로 실패하는지 확인합니다. 장치가 있을 때 막는 테스트와 짝을 이뤄 "있으면 막고, 빼면 깨진다"를 둘 다 보여 줍니다. 최근 결과는 36개 중 36개 검출입니다. 장치별 표는 [docs/testing.md](docs/testing.md)에 있습니다.
 
 ```bash
 docker compose --profile test run --rm test npm run test:sabotage
