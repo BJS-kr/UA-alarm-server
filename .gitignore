@@ -1,0 +1,10 @@
+# 비공개 원본 과제 명세 (ADR-0038)
+.local/
+
+node_modules/
+dist/
+coverage/
+reports/
+.stryker-tmp/
+*.log
+.env
