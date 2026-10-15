@@ -12,14 +12,22 @@ import { loadConfig } from '../shared/config/app-config';
  */
 async function main(): Promise<void> {
   const out = process.argv[2] ?? 'docs/openapi.json';
-  const config = loadConfig({ DATABASE_URL: 'postgres://unused@localhost/unused', API_KEY: 'unused' }, 'api');
+  const config = loadConfig(
+    { DATABASE_URL: 'postgres://unused@localhost/unused', API_KEY: 'unused' },
+    'api',
+  );
   const pool = new Pool({ connectionString: config.DATABASE_URL });
-  const silent = { log: () => undefined, error: () => undefined, warn: () => undefined };
+  const silent = {
+    log: () => undefined,
+    error: () => undefined,
+    warn: () => undefined,
+  };
   const app = await createApiApp(config, pool, silent);
+
   await app.init();
   writeFileSync(out, `${JSON.stringify(buildOpenApiDocument(app), null, 2)}\n`);
   await app.close();
-  process.stdout.write(`${out}에 썼다\n`);
+  process.stdout.write(`Wrote ${out}\n`);
 }
 
 void main();

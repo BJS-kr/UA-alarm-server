@@ -1,10 +1,16 @@
-import { DynamicModule, Inject, Module, OnApplicationShutdown } from '@nestjs/common';
+import {
+  DynamicModule,
+  Inject,
+  Module,
+  OnApplicationShutdown,
+} from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD, APP_PIPE } from '@nestjs/core';
 import { Pool } from 'pg';
 import { AppConfig } from '../shared/config/app-config';
 import { createDb, DB, PG_POOL } from '../shared/db/database';
 import { AlarmsController } from './alarms/alarms.controller';
+import { AlarmsRepository } from './alarms/alarms.repository';
 import { AlarmsService } from './alarms/alarms.service';
 import { ApiKeyGuard } from './auth/api-key.guard';
 import { ProblemDetailsFilter } from './errors/problem-details.filter';
@@ -24,12 +30,27 @@ export class ApiModule {
   static forRoot(config: AppConfig, pool: Pool): DynamicModule {
     return {
       module: ApiModule,
-      imports: [ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, load: [() => ({ app: config })] })],
+      imports: [
+        ConfigModule.forRoot({
+          isGlobal: true,
+          ignoreEnvFile: true,
+          load: [() => ({ app: config })],
+        }),
+      ],
       controllers: [AlarmsController],
       providers: [
-        { provide: AppConfig, inject: [ConfigService], useFactory: (cs: ConfigService) => cs.getOrThrow<AppConfig>('app') },
+        {
+          provide: AppConfig,
+          inject: [ConfigService],
+          useFactory: (cs: ConfigService) => cs.getOrThrow<AppConfig>('app'),
+        },
         { provide: PG_POOL, useValue: pool },
-        { provide: DB, inject: [PG_POOL], useFactory: (p: Pool) => createDb(p) },
+        {
+          provide: DB,
+          inject: [PG_POOL],
+          useFactory: (p: Pool) => createDb(p),
+        },
+        AlarmsRepository,
         AlarmsService,
         PoolCloser,
         { provide: APP_GUARD, useClass: ApiKeyGuard },

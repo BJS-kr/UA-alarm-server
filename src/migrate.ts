@@ -11,10 +11,13 @@ async function main(): Promise<void> {
   const config = loadConfig(process.env, 'migrate');
   const logger = new AppLogger(config.LOG_LEVEL, 'Migrate');
   const pool = createPool(config.MIGRATION_DATABASE_URL!, 'alarm-migrate', 1);
+
   try {
     await waitForDatabase(pool, logger);
-    await migrate(createDb(pool), { migrationsFolder: path.join(__dirname, '..', 'drizzle') });
-    logger.log('마이그레이션 완료');
+    await migrate(createDb(pool), {
+      migrationsFolder: path.join(__dirname, '..', 'drizzle'),
+    });
+    logger.log('Migrations applied');
   } finally {
     await pool.end();
   }
@@ -22,6 +25,8 @@ async function main(): Promise<void> {
 
 main().catch((error: unknown) => {
   // 로거를 만들기 전에 실패할 수 있으므로 표준 에러로 직접 남긴다.
-  process.stderr.write(`${JSON.stringify({ level: 'fatal', message: (error as Error).message })}\n`);
+  process.stderr.write(
+    `${JSON.stringify({ level: 'fatal', message: (error as Error).message })}\n`,
+  );
   process.exit(1);
 });

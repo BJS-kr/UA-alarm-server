@@ -10,14 +10,19 @@ export function createValidationPipe(): ValidationPipe {
     whitelist: true,
     forbidNonWhitelisted: true,
     transform: true,
-    exceptionFactory: (errors: ValidationError[]) => validationFailed(flatten(errors)),
+    exceptionFactory: (errors: ValidationError[]) =>
+      validationFailed(flatten(errors)),
   });
 }
 
 function flatten(errors: ValidationError[], parent = ''): FieldError[] {
   return errors.flatMap((error) => {
     const field = parent ? `${parent}.${error.property}` : error.property;
-    const own = Object.values(error.constraints ?? {}).map((message) => ({ field, message }));
+    const own = Object.values(error.constraints ?? {}).map((message) => ({
+      field,
+      message,
+    }));
+
     return [...own, ...flatten(error.children ?? [], field)];
   });
 }

@@ -1,6 +1,7 @@
-import { sql } from 'drizzle-orm';
 import { collectDefaultMetrics, Gauge, Registry } from 'prom-client';
 import { Db } from '../../shared/db/database';
+import { unhandledErrors } from '../../shared/runtime/process-guardrail';
+import { ApiMetricsRepository } from './metrics.repository';
 
 /**
  * DB에서 세는 메트릭은 api 한 곳에서만 낸다 (ADR-0027).
@@ -8,7 +9,10 @@ import { Db } from '../../shared/db/database';
  */
 export function createApiRegistry(db: Db): Registry {
   const registry = new Registry();
+  const repository = new ApiMetricsRepository(db);
+
   collectDefaultMetrics({ register: registry });
+  registry.registerMetric(unhandledErrors);
 
   new Gauge({
     name: 'alarm_deliveries_pending',
@@ -16,11 +20,13 @@ export function createApiRegistry(db: Db): Registry {
     labelNames: ['priority'],
     registers: [registry],
     async collect() {
-      const result = await db.execute<{ priority: number; n: number }>(
-        sql`SELECT priority, count(*)::int AS n FROM deliveries WHERE status = 'PENDING' GROUP BY priority`,
-      );
+      const rows = await repository.pendingByPriority();
+
       this.reset();
-      for (const row of result.rows) this.set({ priority: String(row.priority) }, row.n);
+
+      for (const row of rows) {
+        this.set({ priority: String(row.priority) }, row.count);
+      }
     },
   });
 
@@ -30,13 +36,13 @@ export function createApiRegistry(db: Db): Registry {
     labelNames: ['priority'],
     registers: [registry],
     async collect() {
-      const result = await db.execute<{ priority: number; age: number }>(sql`
-        SELECT d.priority, EXTRACT(EPOCH FROM clock_timestamp() - min(d.next_attempt_at))::float AS age
-          FROM deliveries d JOIN alarms a ON a.id = d.alarm_id
-         WHERE d.status = 'PENDING' AND d.next_attempt_at <= clock_timestamp() AND a.status = 'SENDING'
-         GROUP BY d.priority`);
+      const rows = await repository.oldestDueByPriority();
+
       this.reset();
-      for (const row of result.rows) this.set({ priority: String(row.priority) }, row.age);
+
+      for (const row of rows) {
+        this.set({ priority: String(row.priority) }, row.ageSeconds ?? 0);
+      }
     },
   });
 
@@ -45,10 +51,7 @@ export function createApiRegistry(db: Db): Registry {
     help: '가장 오래 전송 중인 건의 나이. 1분을 넘으면 멈춘 워커가 있다',
     registers: [registry],
     async collect() {
-      const result = await db.execute<{ age: number | null }>(sql`
-        SELECT EXTRACT(EPOCH FROM clock_timestamp() - min(claimed_at))::float AS age
-          FROM deliveries WHERE status = 'IN_FLIGHT'`);
-      this.set(result.rows[0]?.age ?? 0);
+      this.set(await repository.oldestInFlightSeconds());
     },
   });
 
@@ -57,10 +60,7 @@ export function createApiRegistry(db: Db): Registry {
     help: '결과 확인을 기다리는 건수',
     registers: [registry],
     async collect() {
-      const result = await db.execute<{ n: number }>(
-        sql`SELECT count(*)::int AS n FROM deliveries WHERE status = 'UNCONFIRMED'`,
-      );
-      this.set(result.rows[0]?.n ?? 0);
+      this.set(await repository.unconfirmedCount());
     },
   });
 
@@ -70,11 +70,10 @@ export function createApiRegistry(db: Db): Registry {
     labelNames: ['status'],
     registers: [registry],
     async collect() {
-      const result = await db.execute<{ status: string; n: number }>(
-        sql`SELECT status, count(*)::int AS n FROM alarms GROUP BY status`,
-      );
+      const rows = await repository.alarmsByStatus();
+
       this.reset();
-      for (const row of result.rows) this.set({ status: row.status }, row.n);
+      for (const row of rows) this.set({ status: row.status }, row.count);
     },
   });
 

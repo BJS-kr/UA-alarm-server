@@ -22,11 +22,16 @@ export class SendBreaker {
   }
 
   async record(result: SendResult): Promise<void> {
-    if (!this.window.record(isBreakerFailure(result))) return;
+    const isOutage = this.window.record(isBreakerFailure(result));
+    if (!isOutage) return;
     const trip = await this.bucket.tripBreaker(this.options);
-    if (trip.tripped) {
+    const isTripped = trip.tripped;
+    if (isTripped) {
       this.onTrip();
-      this.logger.error('발송 장애로 판단해 전체 발송을 멈춘다', { pauseMs: trip.pauseMs, streak: trip.streak });
+      this.logger.error(
+        'Send failures look like an outage, pausing all sending',
+        { pauseMs: trip.pauseMs, streak: trip.streak },
+      );
     }
   }
 }

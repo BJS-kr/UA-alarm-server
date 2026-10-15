@@ -17,10 +17,14 @@ export class ApiKeyGuard implements CanActivate {
   }
 
   canActivate(context: ExecutionContext): boolean {
-    const header = context.switchToHttp().getRequest<Request>().headers.authorization ?? '';
+    const header =
+      context.switchToHttp().getRequest<Request>().headers.authorization ?? '';
     const match = /^Bearer (.+)$/.exec(header);
     // 길이가 다르면 바로 끝나는 비교는 키 길이를 흘린다. 해시를 비교해 길이를 고정한다.
-    if (!match || !timingSafeEqual(digest(match[1]), this.expected)) throw unauthorized();
+    const isAuthorized =
+      match !== null && timingSafeEqual(digest(match[1]), this.expected);
+    if (!isAuthorized) throw unauthorized();
+
     return true;
   }
 }

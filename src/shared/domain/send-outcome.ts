@@ -39,21 +39,45 @@ export function decideAfterSend(
       return { kind: 'failed', code: result.code, message: result.message };
     case 'rate_limited':
       // 그 건의 문제가 아니라 우리 속도의 문제이므로 시도 횟수에 세지 않는다.
-      return { kind: 'requeue_uncounted', code: 'RATE_LIMITED', message: `retry-after ${result.retryAfterSec}s` };
+      return {
+        kind: 'requeue_uncounted',
+        code: 'RATE_LIMITED',
+        message: `retry-after ${result.retryAfterSec}s`,
+      };
     case 'server_error':
-    case 'not_sent':
-      if (attempts >= options.maxAttempts) {
-        return { kind: 'failed', code: result.code, message: `${result.message} (재시도 ${attempts}회 소진)` };
+    case 'not_sent': {
+      const isOutOfAttempts = attempts >= options.maxAttempts;
+      if (isOutOfAttempts) {
+        return {
+          kind: 'failed',
+          code: result.code,
+          message: `${result.message} (gave up after ${attempts} attempts)`,
+        };
       }
-      return { kind: 'retry', delayMs: retryDelayMs(attempts, options, random), code: result.code, message: result.message };
+
+      return {
+        kind: 'retry',
+        delayMs: retryDelayMs(attempts, options, random),
+        code: result.code,
+        message: result.message,
+      };
+    }
     case 'unknown':
-      return { kind: 'unconfirmed', code: result.code, message: result.message };
+      return {
+        kind: 'unconfirmed',
+        code: result.code,
+        message: result.message,
+      };
   }
 }
 
 /** 서킷 브레이커가 장애 신호로 세는 결과: 5xx, 연결 오류, 타임아웃 (ADR-0014). */
 export function isBreakerFailure(result: SendResult): boolean {
-  return result.kind === 'server_error' || result.kind === 'not_sent' || result.kind === 'unknown';
+  return (
+    result.kind === 'server_error' ||
+    result.kind === 'not_sent' ||
+    result.kind === 'unknown'
+  );
 }
 
 export interface LookedUpMessage {
@@ -62,7 +86,9 @@ export interface LookedUpMessage {
   sentAt: string;
 }
 
-export type LookupResult = { kind: 'ok'; messages: LookedUpMessage[] } | { kind: 'error'; code: string; message: string };
+export type LookupResult =
+  | { kind: 'ok'; messages: LookedUpMessage[] }
+  | { kind: 'error'; code: string; message: string };
 
 /** 결과 확인을 마친 UNCONFIRMED Delivery가 갈 곳 (ADR-0002, 0017, 0032). */
 export type ReconcileDecision =
@@ -74,23 +100,39 @@ export type ReconcileDecision =
 
 export function decideAfterLookup(
   lookup: LookupResult,
-  alarmCanceling: boolean,
+  isAlarmCanceling: boolean,
   attempts: number,
   options: RetryOptions,
   random: () => number = Math.random,
 ): ReconcileDecision {
-  if (lookup.kind === 'error') {
+  const isLookupFailed = lookup.kind === 'error';
+  if (isLookupFailed) {
     // 조회가 실패하면 다시 보내지 않고 조회만 다시 한다. 발송 시도 횟수에는 세지 않는다.
     return { kind: 'retry_lookup', delayMs: retryDelayMs(1, options, random) };
   }
-  if (lookup.messages.length > 0) {
+
+  const isRecorded = lookup.messages.length > 0;
+  if (isRecorded) {
     const first = lookup.messages[0];
-    return { kind: 'sent', messageId: first.messageId, sentAt: first.sentAt, duplicate: lookup.messages.length > 1 };
+
+    return {
+      kind: 'sent',
+      messageId: first.messageId,
+      sentAt: first.sentAt,
+      duplicate: lookup.messages.length > 1,
+    };
   }
+
   // 기록 없음이 확인됐다. 이전 시도는 나가지 않았다.
-  if (alarmCanceling) return { kind: 'canceled' };
-  if (attempts >= options.maxAttempts) {
-    return { kind: 'failed', code: 'NOT_DELIVERED', message: `발송 기록 없음 (재시도 ${attempts}회 소진)` };
+  if (isAlarmCanceling) return { kind: 'canceled' };
+  const isOutOfAttempts = attempts >= options.maxAttempts;
+  if (isOutOfAttempts) {
+    return {
+      kind: 'failed',
+      code: 'NOT_DELIVERED',
+      message: `No send record found (gave up after ${attempts} attempts)`,
+    };
   }
+
   return { kind: 'resend' };
 }

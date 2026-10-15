@@ -35,11 +35,18 @@ export class FakeExternalApi {
   private readonly attemptsByRef = new Map<string, number>();
   private server?: http.Server;
   private messageSeq = 0;
-  private bucket?: { capacity: number; ratePerSec: number; tokens: number; at: number };
+  private bucket?: {
+    capacity: number;
+    ratePerSec: number;
+    tokens: number;
+    at: number;
+  };
   rateLimited = 0;
 
   /** 수신자와 그 clientRef로 받은 몇 번째 요청인지로 동작을 정한다. 기본은 접수. */
-  behavior: (recipientId: string, attempt: number) => SendBehavior = () => ({ type: 'accept' });
+  behavior: (recipientId: string, attempt: number) => SendBehavior = () => ({
+    type: 'accept',
+  });
   lookupFails = false;
   usersFail = false;
 
@@ -52,14 +59,19 @@ export class FakeExternalApi {
 
   async start(): Promise<string> {
     this.server = http.createServer((req, res) => void this.handle(req, res));
-    await new Promise<void>((resolve) => this.server!.listen(0, '127.0.0.1', resolve));
+    await new Promise<void>((resolve) =>
+      this.server!.listen(0, '127.0.0.1', resolve),
+    );
     const { port } = this.server.address() as AddressInfo;
+
     return `http://127.0.0.1:${port}`;
   }
 
   async stop(): Promise<void> {
     this.server?.closeAllConnections();
-    await new Promise<void>((resolve) => (this.server ? this.server.close(() => resolve()) : resolve()));
+    await new Promise<void>((resolve) =>
+      this.server ? this.server.close(() => resolve()) : resolve(),
+    );
   }
 
   recordsFor(clientRef: string): number {
@@ -71,41 +83,88 @@ export class FakeExternalApi {
     this.store(clientRef, recipientId);
   }
 
-  private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  private async handle(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://fake');
-    if (req.method === 'GET' && url.pathname === '/v1/users') return this.listUsers(url, res);
-    if (req.method === 'GET' && url.pathname === '/v1/messages') return this.lookup(url, res);
-    if (req.method === 'POST' && url.pathname === '/v1/messages') return this.send(req, res);
+    if (req.method === 'GET' && url.pathname === '/v1/users') {
+      return this.listUsers(url, res);
+    }
+
+    if (req.method === 'GET' && url.pathname === '/v1/messages') {
+      return this.lookup(url, res);
+    }
+
+    if (req.method === 'POST' && url.pathname === '/v1/messages') {
+      return this.send(req, res);
+    }
+
     res.writeHead(404).end();
   }
 
   private listUsers(url: URL, res: http.ServerResponse): void {
-    if (this.usersFail) return void res.writeHead(500).end('{"code":"INTERNAL_ERROR"}');
+    if (this.usersFail) {
+      return void res.writeHead(500).end('{"code":"INTERNAL_ERROR"}');
+    }
+
     const limit = Number(url.searchParams.get('limit') ?? 100);
     const cursor = url.searchParams.get('cursor');
-    const offset = cursor ? Number(Buffer.from(cursor, 'base64url').toString()) : 0;
+    const offset = cursor
+      ? Number(Buffer.from(cursor, 'base64url').toString())
+      : 0;
     const page = this.users.slice(offset, offset + limit).map((id) => ({ id }));
-    const next = offset + limit < this.users.length ? Buffer.from(String(offset + limit)).toString('base64url') : null;
-    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ users: page, nextCursor: next }));
+    const next =
+      offset + limit < this.users.length
+        ? Buffer.from(String(offset + limit)).toString('base64url')
+        : null;
+
+    res
+      .writeHead(200, { 'content-type': 'application/json' })
+      .end(JSON.stringify({ users: page, nextCursor: next }));
   }
 
   private lookup(url: URL, res: http.ServerResponse): void {
-    if (this.lookupFails) return void res.writeHead(503).end('{"code":"SERVICE_UNAVAILABLE"}');
+    if (this.lookupFails) {
+      return void res.writeHead(503).end('{"code":"SERVICE_UNAVAILABLE"}');
+    }
+
     const clientRef = url.searchParams.get('clientRef') ?? '';
-    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ messages: this.messages.get(clientRef) ?? [] }));
+
+    res
+      .writeHead(200, { 'content-type': 'application/json' })
+      .end(JSON.stringify({ messages: this.messages.get(clientRef) ?? [] }));
   }
 
-  private async send(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  private async send(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
     const chunks: Buffer[] = [];
+
     for await (const chunk of req) chunks.push(chunk as Buffer);
-    const body = JSON.parse(Buffer.concat(chunks).toString()) as { alarmId: string; recipientId: string; clientRef: string };
+    const body = JSON.parse(Buffer.concat(chunks).toString()) as {
+      alarmId: string;
+      recipientId: string;
+      clientRef: string;
+    };
 
     if (this.bucket && !this.takeToken()) {
       this.rateLimited += 1;
-      return void res.writeHead(429, { 'retry-after': '1' }).end('{"code":"RATE_LIMITED"}');
+
+      return void res
+        .writeHead(429, { 'retry-after': '1' })
+        .end('{"code":"RATE_LIMITED"}');
     }
-    this.received.push({ at: Date.now(), alarmId: body.alarmId, recipientId: body.recipientId, clientRef: body.clientRef });
+
+    this.received.push({
+      at: Date.now(),
+      alarmId: body.alarmId,
+      recipientId: body.recipientId,
+      clientRef: body.clientRef,
+    });
     const attempt = (this.attemptsByRef.get(body.clientRef) ?? 0) + 1;
+
     this.attemptsByRef.set(body.clientRef, attempt);
     const behavior = this.behavior(body.recipientId, attempt);
 
@@ -113,42 +172,87 @@ export class FakeExternalApi {
       case 'accept': {
         const message = this.store(body.clientRef, body.recipientId);
         if (behavior.delayMs) await sleep(behavior.delayMs);
-        return void res.writeHead(202, { 'content-type': 'application/json' }).end(JSON.stringify({ messageId: message.messageId }));
+
+        return void res
+          .writeHead(202, { 'content-type': 'application/json' })
+          .end(JSON.stringify({ messageId: message.messageId }));
       }
       case 'reject':
-        return void res.writeHead(400).end(JSON.stringify({ code: behavior.code ?? 'RECIPIENT_BLOCKED', message: 'opted out' }));
+        return void res.writeHead(400).end(
+          JSON.stringify({
+            code: behavior.code ?? 'RECIPIENT_BLOCKED',
+            message: 'opted out',
+          }),
+        );
       case 'error':
-        return void res.writeHead(behavior.status).end(JSON.stringify({ code: behavior.status === 500 ? 'INTERNAL_ERROR' : 'SERVICE_UNAVAILABLE' }));
+        return void res.writeHead(behavior.status).end(
+          JSON.stringify({
+            code:
+              behavior.status === 500
+                ? 'INTERNAL_ERROR'
+                : 'SERVICE_UNAVAILABLE',
+          }),
+        );
       case 'rate_limit':
-        return void res.writeHead(429, { 'retry-after': String(behavior.retryAfterSec ?? 1) }).end('{"code":"RATE_LIMITED"}');
+        return void res
+          .writeHead(429, {
+            'retry-after': String(behavior.retryAfterSec ?? 1),
+          })
+          .end('{"code":"RATE_LIMITED"}');
       case 'hang_then_record': {
         await sleep(behavior.hangMs);
         const message = this.store(body.clientRef, body.recipientId);
-        if (!res.destroyed) res.writeHead(202).end(JSON.stringify({ messageId: message.messageId }));
+        if (!res.destroyed) {
+          res
+            .writeHead(202)
+            .end(JSON.stringify({ messageId: message.messageId }));
+        }
+
         return;
       }
       case 'record_then_hang': {
         const message = this.store(body.clientRef, body.recipientId);
+
         await sleep(behavior.hangMs);
-        if (!res.destroyed) res.writeHead(202).end(JSON.stringify({ messageId: message.messageId }));
+
+        if (!res.destroyed) {
+          res
+            .writeHead(202)
+            .end(JSON.stringify({ messageId: message.messageId }));
+        }
+
         return;
       }
     }
   }
 
   private store(clientRef: string, recipientId: string): StoredMessage {
-    const message = { messageId: `m_${++this.messageSeq}`, recipientId, sentAt: new Date().toISOString() };
-    this.messages.set(clientRef, [...(this.messages.get(clientRef) ?? []), message]);
+    const message = {
+      messageId: `m_${++this.messageSeq}`,
+      recipientId,
+      sentAt: new Date().toISOString(),
+    };
+
+    this.messages.set(clientRef, [
+      ...(this.messages.get(clientRef) ?? []),
+      message,
+    ]);
+
     return message;
   }
 
   private takeToken(): boolean {
     const bucket = this.bucket!;
     const now = Date.now();
-    bucket.tokens = Math.min(bucket.capacity, bucket.tokens + ((now - bucket.at) / 1000) * bucket.ratePerSec);
+
+    bucket.tokens = Math.min(
+      bucket.capacity,
+      bucket.tokens + ((now - bucket.at) / 1000) * bucket.ratePerSec,
+    );
     bucket.at = now;
     if (bucket.tokens < 1) return false;
     bucket.tokens -= 1;
+
     return true;
   }
 }

@@ -1,0 +1,9 @@
+dist/
+node_modules/
+drizzle/
+reports/
+coverage/
+stryker-tmp/
+docs/
+*.md
+package-lock.json

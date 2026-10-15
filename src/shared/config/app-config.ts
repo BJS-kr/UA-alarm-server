@@ -64,33 +64,64 @@ export class AppConfig {
   @Type(() => Number) @IsInt() @Min(0) MANAGEMENT_PORT = 9100;
   @IsIn(['info', 'debug']) LOG_LEVEL: 'info' | 'debug' = 'info';
   @IsOptional() @IsString() API_KEY?: string = undefined;
+
+  // api의 DB 대기 한도. 요청마다 반드시 응답하기 위해서다 (ADR-0039).
+  @Type(() => Number) @IsInt() @Min(100) DB_ACQUIRE_TIMEOUT_MS = 5_000;
+  @Type(() => Number) @IsInt() @Min(100) DB_QUERY_TIMEOUT_MS = 30_000;
 }
 
 /** 값 하나가 아니라 값 사이의 관계가 깨지면 안전성이 무너지는 항목들 (ADR-0030). */
 function relationErrors(config: AppConfig, role: ProcessRole): string[] {
   const errors: string[] = [];
-  if (!(config.HEARTBEAT_INTERVAL_MS < config.SEND_GUARD_MS && config.SEND_GUARD_MS < config.INVALIDATE_AFTER_MS)) {
+  // 무효로 선언되기 전에 워커가 먼저 스스로 멈춰야 한다 (ADR-0004).
+  const isLivenessOrdered =
+    config.HEARTBEAT_INTERVAL_MS < config.SEND_GUARD_MS &&
+    config.SEND_GUARD_MS < config.INVALIDATE_AFTER_MS;
+  if (!isLivenessOrdered) {
     errors.push(
-      'HEARTBEAT_INTERVAL_MS < SEND_GUARD_MS < INVALIDATE_AFTER_MS 이어야 한다 (ADR-0004: 무효 선언 전에 워커가 먼저 스스로 멈춰야 한다)',
+      'HEARTBEAT_INTERVAL_MS < SEND_GUARD_MS < INVALIDATE_AFTER_MS is required (ADR-0004)',
     );
   }
-  if (config.CLAIM_BATCH_MAX > config.MAX_IN_FLIGHT) {
-    errors.push('CLAIM_BATCH_MAX <= MAX_IN_FLIGHT 이어야 한다 (ADR-0013)');
+
+  const isBatchWithinInFlight = config.CLAIM_BATCH_MAX <= config.MAX_IN_FLIGHT;
+  if (!isBatchWithinInFlight) {
+    errors.push('CLAIM_BATCH_MAX <= MAX_IN_FLIGHT is required (ADR-0013)');
   }
-  if (config.RETRY_BASE_MS > config.RETRY_MAX_MS) {
-    errors.push('RETRY_BASE_MS <= RETRY_MAX_MS 이어야 한다 (ADR-0014)');
+
+  const isRetryRangeValid = config.RETRY_BASE_MS <= config.RETRY_MAX_MS;
+  if (!isRetryRangeValid) {
+    errors.push('RETRY_BASE_MS <= RETRY_MAX_MS is required (ADR-0014)');
   }
-  if (config.BREAKER_PAUSE_MIN_MS > config.BREAKER_PAUSE_MAX_MS) {
-    errors.push('BREAKER_PAUSE_MIN_MS <= BREAKER_PAUSE_MAX_MS 이어야 한다 (ADR-0014)');
+
+  const isBreakerRangeValid =
+    config.BREAKER_PAUSE_MIN_MS <= config.BREAKER_PAUSE_MAX_MS;
+  if (!isBreakerRangeValid) {
+    errors.push(
+      'BREAKER_PAUSE_MIN_MS <= BREAKER_PAUSE_MAX_MS is required (ADR-0014)',
+    );
   }
-  if (role !== 'migrate' && !config.DATABASE_URL) errors.push('DATABASE_URL 이 필요하다');
-  if (role === 'migrate' && !config.MIGRATION_DATABASE_URL) errors.push('MIGRATION_DATABASE_URL 이 필요하다');
-  if (role === 'api' && !config.API_KEY) errors.push('API_KEY 가 필요하다 (ADR-0033)');
+
+  const isMigration = role === 'migrate';
+  const isApi = role === 'api';
+  const isAppDatabaseMissing = !isMigration && !config.DATABASE_URL;
+  if (isAppDatabaseMissing) errors.push('DATABASE_URL is required');
+  const isMigrationDatabaseMissing =
+    isMigration && !config.MIGRATION_DATABASE_URL;
+  if (isMigrationDatabaseMissing) {
+    errors.push('MIGRATION_DATABASE_URL is required');
+  }
+
+  const isApiKeyMissing = isApi && !config.API_KEY;
+  if (isApiKeyMissing) errors.push('API_KEY is required (ADR-0033)');
+
   return errors;
 }
 
 /** 틀린 값이 하나라도 있으면 어떤 키가 왜 틀렸는지 모아 예외를 던진다. 기동은 여기서 멈춘다. */
-export function loadConfig(env: Record<string, string | undefined>, role: ProcessRole): AppConfig {
+export function loadConfig(
+  env: Record<string, string | undefined>,
+  role: ProcessRole,
+): AppConfig {
   const known = new Set(Object.keys(new AppConfig()));
   const defined = Object.fromEntries(
     // 빈 문자열은 값이 없는 것으로 본다.
@@ -102,15 +133,20 @@ export function loadConfig(env: Record<string, string | undefined>, role: Proces
     Object.values(e.constraints ?? {}).map((msg) => `${e.property}: ${msg}`),
   );
   const errors = [...fieldErrors, ...relationErrors(config, role)];
-  if (errors.length > 0) {
-    throw new Error(`설정이 올바르지 않아 시작하지 않는다:\n - ${errors.join('\n - ')}`);
+  const isInvalid = errors.length > 0;
+  if (isInvalid) {
+    throw new Error(
+      `Invalid configuration, not starting:\n - ${errors.join('\n - ')}`,
+    );
   }
+
   return config;
 }
 
 /** 기동 로그에 남길 때 비밀값을 가린다 (ADR-0028, 0030). */
 export function describeConfig(config: AppConfig): Record<string, unknown> {
-  const maskUrl = (url?: string) => (url ? url.replace(/\/\/([^:/@]+):([^@]+)@/, '//$1:****@') : url);
+  const maskUrl = (url?: string) => url && maskUrlCredentials(url);
+
   return {
     ...config,
     DATABASE_URL: maskUrl(config.DATABASE_URL),

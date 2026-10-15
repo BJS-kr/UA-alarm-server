@@ -20,7 +20,8 @@ export const DeliveryStatus = {
   FAILED: 'FAILED',
   CANCELED: 'CANCELED',
 } as const;
-export type DeliveryStatus = (typeof DeliveryStatus)[keyof typeof DeliveryStatus];
+export type DeliveryStatus =
+  (typeof DeliveryStatus)[keyof typeof DeliveryStatus];
 
 /** 꺼내는 순서의 첫 기준. 긴급이 먼저다 (ADR-0011). */
 export function priorityOf(type: AlarmType): 0 | 1 {

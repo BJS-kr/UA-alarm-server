@@ -37,24 +37,35 @@ export class ProblemException extends HttpException {
 export function validationFailed(errors: FieldError[]): ProblemException {
   return new ProblemException(400, {
     type: ProblemType.VALIDATION_FAILED,
-    title: '요청 값이 올바르지 않다',
-    detail: '하나 이상의 필드가 규칙을 어겼다',
+    title: 'Invalid request',
+    detail: 'One or more fields failed validation',
     extensions: { errors },
   });
 }
 
 export function badRequest(detail: string): ProblemException {
-  return new ProblemException(400, { type: ProblemType.BAD_REQUEST, title: '잘못된 요청', detail });
+  return new ProblemException(400, {
+    type: ProblemType.BAD_REQUEST,
+    title: 'Bad request',
+    detail,
+  });
 }
 
 export function notFound(detail: string): ProblemException {
-  return new ProblemException(404, { type: ProblemType.NOT_FOUND, title: '대상을 찾을 수 없다', detail });
+  return new ProblemException(404, {
+    type: ProblemType.NOT_FOUND,
+    title: 'Not found',
+    detail,
+  });
 }
 
-export function invalidState(detail: string, currentStatus: string): ProblemException {
+export function invalidState(
+  detail: string,
+  currentStatus: string,
+): ProblemException {
   return new ProblemException(409, {
     type: ProblemType.INVALID_STATE,
-    title: '현재 상태에서 할 수 없는 요청',
+    title: 'Not allowed in the current state',
     detail,
     extensions: { currentStatus },
   });
@@ -63,7 +74,8 @@ export function invalidState(detail: string, currentStatus: string): ProblemExce
 export function unauthorized(): ProblemException {
   return new ProblemException(401, {
     type: ProblemType.UNAUTHORIZED,
-    title: '인증이 필요하다',
-    detail: 'Authorization: Bearer <API 키> 헤더가 없거나 키가 틀렸다',
+    title: 'Authentication required',
+    detail:
+      'The Authorization: Bearer <API key> header is missing or the key is wrong',
   });
 }

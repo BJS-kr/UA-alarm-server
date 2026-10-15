@@ -10,7 +10,10 @@ export function encodeCursor(position: string | number): string {
 export function decodeCursor(cursor: string): string | number | undefined {
   try {
     // JSON이 null이면 .p에서 예외가 나고 아래 catch가 undefined로 돌려준다.
-    const { p } = JSON.parse(Buffer.from(cursor, 'base64url').toString()) as { p?: unknown };
+    const { p } = JSON.parse(Buffer.from(cursor, 'base64url').toString()) as {
+      p?: unknown;
+    };
+
     return typeof p === 'string' || typeof p === 'number' ? p : undefined;
   } catch {
     return undefined;

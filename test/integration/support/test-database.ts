@@ -16,22 +16,34 @@ export interface TestDatabase {
   drop: () => Promise<void>;
 }
 
-const ADMIN_URL = process.env.TEST_DATABASE_ADMIN_URL ?? 'postgres://postgres:postgres_pw@localhost:5432/postgres';
+const ADMIN_URL =
+  process.env.TEST_DATABASE_ADMIN_URL ??
+  'postgres://postgres:postgres_pw@localhost:5432/postgres';
 
 export async function createTestDatabase(): Promise<TestDatabase> {
   const name = `t_${randomBytes(6).toString('hex')}`;
   const admin = new Client({ connectionString: ADMIN_URL });
+
   await admin.connect();
   await admin.query(`CREATE DATABASE ${name}`);
   const url = withDatabase(ADMIN_URL, name);
 
   const migrator = new Pool({ connectionString: url, max: 1 });
-  await migrate(drizzle(migrator), { migrationsFolder: path.join(__dirname, '..', '..', '..', 'drizzle') });
+
+  await migrate(drizzle(migrator), {
+    migrationsFolder: path.join(__dirname, '..', '..', '..', 'drizzle'),
+  });
   await migrator.end();
 
-  const pool = new Pool({ connectionString: url, max: 10, application_name: 'alarm-test' });
+  const pool = new Pool({
+    connectionString: url,
+    max: 10,
+    application_name: 'alarm-test',
+  });
+
   // DB를 지울 때 쉬던 연결이 끊기며 나는 오류는 무시한다.
   pool.on('error', () => undefined);
+
   return {
     url,
     pool,
@@ -39,6 +51,7 @@ export async function createTestDatabase(): Promise<TestDatabase> {
     drop: async () => {
       // 앱 종료 훅이 이미 pool을 닫았을 수 있다.
       await pool.end().catch(() => undefined);
+
       try {
         await admin.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
       } finally {
@@ -50,6 +63,8 @@ export async function createTestDatabase(): Promise<TestDatabase> {
 
 function withDatabase(url: string, database: string): string {
   const parsed = new URL(url);
+
   parsed.pathname = `/${database}`;
+
   return parsed.toString();
 }

@@ -6,7 +6,11 @@ import { newWorkerId } from '../../../src/worker/lifecycle/worker-identity';
 import { WorkerRuntime } from '../../../src/worker/runtime/worker-runtime';
 
 /** 시간 기준값을 짧게 줄여 실제 시간으로 빠르게 돌린다 (ADR-0034 기준 4). 관계 검증은 그대로 지킨다. */
-export function testConfig(databaseUrl: string, externalUrl: string, overrides: Record<string, string> = {}): AppConfig {
+export function testConfig(
+  databaseUrl: string,
+  externalUrl: string,
+  overrides: Record<string, string> = {},
+): AppConfig {
   return loadConfig(
     {
       DATABASE_URL: databaseUrl,
@@ -66,7 +70,10 @@ export interface RunningWorker {
 }
 
 /** 같은 프로세스 안에서 DB 연결과 워커 ID를 따로 가진 워커 인스턴스를 띄운다 (ADR-0035). */
-export async function startWorker(config: AppConfig, workerId = newWorkerId()): Promise<RunningWorker> {
+export async function startWorker(
+  config: AppConfig,
+  workerId = newWorkerId(),
+): Promise<RunningWorker> {
   const logger = new CapturingLogger();
   const fatal: string[] = [];
   const runtime = new WorkerRuntime({
@@ -78,12 +85,19 @@ export async function startWorker(config: AppConfig, workerId = newWorkerId()): 
       throw new Error(`fatal: ${reason}`);
     },
   });
+
   await runtime.start();
+
   return { runtime, logger, fatal };
 }
 
-export async function waitFor<T>(probe: () => Promise<T | undefined | false>, timeoutMs = 20_000, intervalMs = 50): Promise<T> {
+export async function waitFor<T>(
+  probe: () => Promise<T | undefined | false>,
+  timeoutMs = 20_000,
+  intervalMs = 50,
+): Promise<T> {
   const deadline = Date.now() + timeoutMs;
+
   for (;;) {
     const value = await probe();
     if (value) return value;
@@ -95,7 +109,13 @@ export async function waitFor<T>(probe: () => Promise<T | undefined | false>, ti
 /** API를 거치지 않고 알림을 원하는 상태로 만든다. 시작 순번은 시퀀스에서 받는다. */
 export async function insertAlarm(
   db: Db,
-  options: { type: 'BULK' | 'URGENT'; status?: string; recipients?: string[]; expansionDone?: boolean; title?: string },
+  options: {
+    type: 'BULK' | 'URGENT';
+    status?: string;
+    recipients?: string[];
+    expansionDone?: boolean;
+    title?: string;
+  },
 ): Promise<{ id: string; startSeq: number }> {
   const status = options.status ?? 'SENDING';
   const started = status !== 'CREATED';
@@ -108,27 +128,41 @@ export async function insertAlarm(
   const alarm = result.rows[0];
   if (options.recipients?.length) {
     const priority = options.type === 'URGENT' ? 0 : 1;
+
     for (const recipientId of options.recipients) {
       await db.execute(sql`
         INSERT INTO deliveries (alarm_id, recipient_id, priority, start_seq)
         VALUES (${alarm.id}, ${recipientId}, ${priority}, ${alarm.start_seq ?? 0})`);
     }
   }
+
   return { id: alarm.id, startSeq: alarm.start_seq };
 }
 
 export async function alarmStatus(db: Db, alarmId: string): Promise<string> {
-  const result = await db.execute<{ status: string }>(sql`SELECT status FROM alarms WHERE id = ${alarmId}`);
+  const result = await db.execute<{ status: string }>(
+    sql`SELECT status FROM alarms WHERE id = ${alarmId}`,
+  );
+
   return result.rows[0].status;
 }
 
-export async function deliveryStatuses(db: Db, alarmId: string): Promise<Record<string, string>> {
+export async function deliveryStatuses(
+  db: Db,
+  alarmId: string,
+): Promise<Record<string, string>> {
   const result = await db.execute<{ recipient_id: string; status: string }>(
     sql`SELECT recipient_id, status FROM deliveries WHERE alarm_id = ${alarmId}`,
   );
-  return Object.fromEntries(result.rows.map((row) => [row.recipient_id, row.status]));
+
+  return Object.fromEntries(
+    result.rows.map((row) => [row.recipient_id, row.status]),
+  );
 }
 
 export function userIds(count: number): string[] {
-  return Array.from({ length: count }, (_, i) => `u_${String(i + 1).padStart(6, '0')}`);
+  return Array.from(
+    { length: count },
+    (_, i) => `u_${String(i + 1).padStart(6, '0')}`,
+  );
 }

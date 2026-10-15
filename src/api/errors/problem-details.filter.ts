@@ -1,4 +1,10 @@
-import { ArgumentsHost, Catch, ExceptionFilter, HttpException, Logger } from '@nestjs/common';
+import {
+  ArgumentsHost,
+  Catch,
+  ExceptionFilter,
+  HttpException,
+  Logger,
+} from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { currentTraceId } from '../../shared/logging/log-context';
 import { Problem, ProblemException, ProblemType } from './problem';
@@ -17,10 +23,16 @@ export class ProblemDetailsFilter implements ExceptionFilter {
     const res = http.getResponse<Response>();
     const { status, problem } = this.toProblem(exception);
 
-    if (status >= 500) {
-      this.logger.error('처리하지 못한 오류', exception instanceof Error ? exception : String(exception));
+    const isServerFault = status >= 500;
+    if (isServerFault) {
+      this.logger.error(
+        'Unhandled error while handling a request',
+        exception instanceof Error ? exception : String(exception),
+      );
     }
-    if (status === 401) res.setHeader('WWW-Authenticate', 'Bearer');
+
+    const isUnauthorized = status === 401;
+    if (isUnauthorized) res.setHeader('WWW-Authenticate', 'Bearer');
 
     res
       .status(status)
@@ -39,34 +51,97 @@ export class ProblemDetailsFilter implements ExceptionFilter {
   }
 
   private toProblem(exception: unknown): { status: number; problem: Problem } {
-    if (exception instanceof ProblemException) {
+    const isProblem = exception instanceof ProblemException;
+    if (isProblem) {
       return { status: exception.getStatus(), problem: exception.problem };
     }
-    if (exception instanceof HttpException) {
+
+    // Nest가 직접 던지는 오류(없는 경로, 잘못된 JSON 등)
+    const isFrameworkError = exception instanceof HttpException;
+    if (isFrameworkError) {
       const status = exception.getStatus();
       const detail = exception.message;
-      if (status === 404) return { status, problem: { type: ProblemType.NOT_FOUND, title: '대상을 찾을 수 없다', detail } };
-      if (status < 500) return { status, problem: { type: ProblemType.BAD_REQUEST, title: '잘못된 요청', detail } };
-      return { status, problem: { type: ProblemType.INTERNAL_ERROR, title: '서버 오류' } };
-    }
-    if (isDatabaseUnavailable(exception)) {
+      const isNotFound = status === 404;
+      if (isNotFound) {
+        return {
+          status,
+          problem: { type: ProblemType.NOT_FOUND, title: 'Not found', detail },
+        };
+      }
+
+      const isClientError = status < 500;
+      if (isClientError) {
+        return {
+          status,
+          problem: {
+            type: ProblemType.BAD_REQUEST,
+            title: 'Bad request',
+            detail,
+          },
+        };
+      }
+
       return {
-        status: 503,
-        problem: { type: ProblemType.SERVICE_UNAVAILABLE, title: '잠시 처리할 수 없다', detail: '잠시 후 다시 시도한다' },
+        status,
+        problem: {
+          type: ProblemType.INTERNAL_ERROR,
+          title: 'Internal server error',
+        },
       };
     }
-    return { status: 500, problem: { type: ProblemType.INTERNAL_ERROR, title: '서버 오류' } };
+
+    const isUnavailable = isDatabaseUnavailable(exception);
+    if (isUnavailable) {
+      return {
+        status: 503,
+        problem: {
+          type: ProblemType.SERVICE_UNAVAILABLE,
+          title: 'Service temporarily unavailable',
+          detail: 'Try again later',
+        },
+      };
+    }
+
+    return {
+      status: 500,
+      problem: {
+        type: ProblemType.INTERNAL_ERROR,
+        title: 'Internal server error',
+      },
+    };
   }
 }
 
-/** DB에 연결할 수 없는 경우 (ADR-0020: 503). */
+/**
+ * DB에 연결할 수 없거나 정해 둔 시간 안에 답이 없는 경우 (ADR-0020: 503, ADR-0039).
+ * Drizzle은 드라이버 오류를 "Failed query"로 감싸 cause에 두므로 cause를 따라가며 본다.
+ */
 function isDatabaseUnavailable(exception: unknown): boolean {
-  const code = (exception as { code?: unknown })?.code;
-  return (
-    code === 'ECONNREFUSED' ||
-    code === 'ENOTFOUND' ||
-    code === '57P01' || // admin_shutdown
-    code === '57P03' || // cannot_connect_now
-    (exception instanceof Error && /timeout exceeded when trying to connect/i.test(exception.message))
-  );
+  return causesOf(exception).some((error) => {
+    const code = (error as { code?: unknown })?.code;
+
+    return (
+      code === 'ECONNREFUSED' ||
+      code === 'ENOTFOUND' ||
+      code === '57P01' || // admin_shutdown
+      code === '57P03' || // cannot_connect_now
+      (error instanceof Error &&
+        /timeout exceeded when trying to connect|query read timeout/i.test(
+          error.message,
+        ))
+    );
+  });
+}
+
+/** 오류와 그 cause들. 순환을 막으려고 깊이를 제한한다. */
+function causesOf(exception: unknown, maxDepth = 5): unknown[] {
+  const chain: unknown[] = [];
+  let current = exception;
+
+  while (current !== undefined && current !== null && chain.length < maxDepth) {
+    chain.push(current);
+    current = (current as { cause?: unknown }).cause;
+  }
+
+  return chain;
 }

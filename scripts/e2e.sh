@@ -26,11 +26,12 @@ docker stop "$GRACEFUL" >/dev/null
 ELAPSED=$(( $(date +%s) - STARTED ))
 CODE=$(docker inspect -f '{{.State.ExitCode}}' "$GRACEFUL")
 # SIGTERM이 Node까지 닿지 않으면 유예 시간 뒤 SIGKILL로 끝나 종료 코드가 137이 되고 종료 로그가 없다 (ADR-0007).
-if [ "$CODE" != "0" ] || ! docker logs "$GRACEFUL" 2>&1 | grep -q '정상 종료 완료'; then
+# 정상 종료를 마친 Nest는 받은 신호를 다시 보내 스스로 끝나므로 종료 코드는 143(SIGTERM)이다.
+if [ "$CODE" = "137" ] || ! docker logs "$GRACEFUL" 2>&1 | grep -q 'Graceful shutdown complete'; then
   echo "E2E 실패: 정상 종료가 동작하지 않았다 (종료 코드 $CODE, ${ELAPSED}초)"
   exit 1
 fi
-echo "정상 종료한 워커: $GRACEFUL (종료 코드 0, ${ELAPSED}초)"
+echo "정상 종료한 워커: $GRACEFUL (종료 코드 $CODE, ${ELAPSED}초)"
 
 echo "== 발송 도중 다른 워커 하나를 강제 종료"
 sleep 3

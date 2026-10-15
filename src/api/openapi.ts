@@ -10,13 +10,22 @@ export function buildOpenApiDocument(app: INestApplication): OpenAPIObject {
       '다수의 수신자에게 알림을 발송한다. 에러는 RFC 9457 Problem Details(application/problem+json)로 응답한다.',
     )
     .setVersion('1.0')
-    .addBearerAuth({ type: 'http', scheme: 'bearer', description: '고정 API 키 (ADR-0033)' })
+    .addBearerAuth({
+      type: 'http',
+      scheme: 'bearer',
+      description: '고정 API 키 (ADR-0033)',
+    })
     .build();
+
   return SwaggerModule.createDocument(app, config);
 }
 
 export function setupOpenApi(app: INestApplication): OpenAPIObject {
   const document = buildOpenApiDocument(app);
-  SwaggerModule.setup('docs', app, document, { jsonDocumentUrl: 'docs/openapi.json' });
+
+  SwaggerModule.setup('docs', app, document, {
+    jsonDocumentUrl: 'docs/openapi.json',
+  });
+
   return document;
 }

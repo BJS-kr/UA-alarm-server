@@ -7,7 +7,9 @@ const KEY = process.env.API_KEY ?? 'dev-api-key';
 const alarmIds = process.argv.slice(2);
 
 async function api(path) {
-  const res = await fetch(API + path, { headers: { authorization: `Bearer ${KEY}` } });
+  const res = await fetch(API + path, {
+    headers: { authorization: `Bearer ${KEY}` },
+  });
   if (!res.ok) throw new Error(`${path} → ${res.status}`);
   return res.json();
 }
@@ -16,7 +18,9 @@ async function allDeliveries(alarmId) {
   const items = [];
   let cursor = null;
   do {
-    const page = await api(`/v1/alarms/${alarmId}/deliveries?limit=100${cursor ? `&cursor=${cursor}` : ''}`);
+    const page = await api(
+      `/v1/alarms/${alarmId}/deliveries?limit=100${cursor ? `&cursor=${cursor}` : ''}`,
+    );
     items.push(...page.items);
     cursor = page.nextCursor;
   } while (cursor);
@@ -26,7 +30,10 @@ async function allDeliveries(alarmId) {
 async function lookupCount(clientRef) {
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      const res = await fetch(`${MOCK}/v1/messages?clientRef=${encodeURIComponent(clientRef)}`, { signal: AbortSignal.timeout(15000) });
+      const res = await fetch(
+        `${MOCK}/v1/messages?clientRef=${encodeURIComponent(clientRef)}`,
+        { signal: AbortSignal.timeout(15000) },
+      );
       if (res.ok) return (await res.json()).messages.length;
     } catch {
       // 느린 응답과 일시 오류는 다시 조회한다.
@@ -53,12 +60,16 @@ let ok = true;
 for (const alarmId of alarmIds) {
   const alarm = await api(`/v1/alarms/${alarmId}`);
   const deliveries = await allDeliveries(alarmId);
-  const counts = await mapLimit(deliveries, 20, (d) => lookupCount(`${alarmId}:${d.recipientId}`));
+  const counts = await mapLimit(deliveries, 20, (d) =>
+    lookupCount(`${alarmId}:${d.recipientId}`),
+  );
   const problems = [];
   deliveries.forEach((d, i) => {
     const n = counts[i];
-    if (d.status === 'SENT' && n !== 1) problems.push(`${d.recipientId}: SENT인데 외부 기록 ${n}건`);
-    if (d.status !== 'SENT' && n !== 0) problems.push(`${d.recipientId}: ${d.status}인데 외부 기록 ${n}건`);
+    if (d.status === 'SENT' && n !== 1)
+      problems.push(`${d.recipientId}: SENT인데 외부 기록 ${n}건`);
+    if (d.status !== 'SENT' && n !== 0)
+      problems.push(`${d.recipientId}: ${d.status}인데 외부 기록 ${n}건`);
   });
   const summary = {
     alarmId,
@@ -71,7 +82,8 @@ for (const alarmId of alarmIds) {
   };
   console.log(JSON.stringify(summary));
   for (const p of problems.slice(0, 20)) console.log('  ', p);
-  if (problems.length > 0 || !['COMPLETED', 'CANCELED'].includes(alarm.status)) ok = false;
+  if (problems.length > 0 || !['COMPLETED', 'CANCELED'].includes(alarm.status))
+    ok = false;
 }
 console.log(ok ? 'E2E 검증 통과' : 'E2E 검증 실패');
 process.exit(ok ? 0 : 1);

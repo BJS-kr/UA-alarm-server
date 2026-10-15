@@ -1,4 +1,11 @@
-import { collectDefaultMetrics, Counter, Gauge, Histogram, Registry } from 'prom-client';
+import { unhandledErrors } from '../../shared/runtime/process-guardrail';
+import {
+  collectDefaultMetrics,
+  Counter,
+  Gauge,
+  Histogram,
+  Registry,
+} from 'prom-client';
 
 /** 워커 메모리 안에서 일어나는 일의 메트릭 (ADR-0027). DB에서 세는 값은 api가 낸다. */
 export class WorkerMetrics {
@@ -81,7 +88,15 @@ export class WorkerMetrics {
     registers: [this.registry],
   });
 
+  readonly loopErrors = new Counter({
+    name: 'alarm_loop_errors_total',
+    help: '작업 루프 한 바퀴가 예상하지 못한 오류로 끝난 횟수. 루프는 멈추지 않고 이어 간다',
+    labelNames: ['loop'] as const,
+    registers: [this.registry],
+  });
+
   constructor() {
     collectDefaultMetrics({ register: this.registry });
+    this.registry.registerMetric(unhandledErrors);
   }
 }

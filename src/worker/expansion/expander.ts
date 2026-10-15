@@ -1,22 +1,21 @@
 import { LoggerService } from '@nestjs/common';
-import { sql } from 'drizzle-orm';
 import { AppConfig } from '../../shared/config/app-config';
 import { Db } from '../../shared/db/database';
-import { deliveries } from '../../shared/db/schema';
 import { retryDelayMs } from '../../shared/domain/retry-policy';
 import { AlarmStatus } from '../../shared/domain/status';
-import { ExternalApiClient } from '../../shared/external/external-api.client';
+import {
+  ExternalApiClient,
+  UsersPageResult,
+} from '../../shared/external/external-api.client';
 import { withLogContext } from '../../shared/logging/log-context';
-import { withAlarmLock } from '../completion/alarm-transaction';
-import { ownerIsGone } from '../lifecycle/alive-workers';
+import { withAlarmLock } from '../completion/alarm-lock.repository';
 import { WorkerMetrics } from '../metrics/worker-metrics';
 import { durable, sleep } from '../runtime/loop-utils';
+import { PollingLoop, Tick } from '../runtime/polling-loop';
+import { ExpansionRepository, ExpansionTask } from './expansion.repository';
 
-interface ExpansionTask {
-  alarmId: string;
-  cursor: string | null;
-  startSeq: number;
-}
+type PageStep = 'continue' | 'done' | 'stop';
+type UsersPage = Extract<UsersPageResult, { kind: 'ok' }>;
 
 /**
  * 수신자 펼치기 (ADR-0006). 알림 하나의 펼치기는 한 번에 한 워커만 쥔다.
@@ -24,102 +23,118 @@ interface ExpansionTask {
  * 커밋된 Delivery는 즉시 발송 대상이 된다. 발송 모듈과는 DB 테이블로만 이어진다.
  */
 export class Expander {
-  private stopping = false;
-  private loopDone: Promise<void> = Promise.resolve();
+  private readonly loop: PollingLoop;
 
   constructor(
     private readonly config: AppConfig,
     private readonly db: Db,
+    private readonly repository: ExpansionRepository,
     private readonly workerId: number,
     private readonly client: ExternalApiClient,
     private readonly metrics: WorkerMetrics,
     private readonly logger: LoggerService,
     private readonly onFatal: (reason: string, error?: unknown) => never,
-  ) {}
+  ) {
+    this.loop = new PollingLoop(
+      {
+        name: 'expansion',
+        idleMs: config.IDLE_POLL_MS,
+        logger,
+        onError: (loop) => metrics.loopErrors.inc({ loop }),
+      },
+      () => this.tick(),
+    );
+  }
 
   start(): void {
-    this.loopDone = this.loop();
+    this.loop.start();
   }
 
   /** 진행 중이면 현재 페이지를 커밋하고 멈춘다 (ADR-0007). */
-  async stop(): Promise<void> {
-    this.stopping = true;
-    await this.loopDone;
+  stop(): Promise<void> {
+    return this.loop.stop();
   }
 
-  private async loop(): Promise<void> {
-    while (!this.stopping) {
-      try {
-        const task = await this.claimTask();
-        if (!task) {
-          await sleep(this.config.IDLE_POLL_MS);
-          continue;
-        }
-        await withLogContext({ alarmId: task.alarmId }, () => this.expand(task));
-      } catch (error) {
-        this.logger.error('펼치기 루프 오류', error as Error);
-        await sleep(this.config.IDLE_POLL_MS);
-      }
-    }
-  }
+  private async tick(): Promise<Tick> {
+    const task = await this.repository.claim();
+    const isIdle = task === undefined;
+    if (isIdle) return 'idle';
+    await withLogContext({ alarmId: task.alarmId }, () => this.expand(task));
 
-  /** 아무도 쥐지 않았거나 주인이 사라진 펼치기 작업을 쥔다. 먼저 시작한 알림부터 (ADR-0012). */
-  private async claimTask(): Promise<ExpansionTask | undefined> {
-    const result = await this.db.execute<{ id: string; expansion_cursor: string | null; start_seq: number }>(sql`
-      UPDATE alarms
-         SET expansion_owner = ${this.workerId}
-       WHERE id = (
-         SELECT id FROM alarms
-          WHERE status = 'SENDING' AND NOT expansion_done
-            AND (expansion_owner IS NULL OR ${ownerIsGone(sql`expansion_owner`)})
-          ORDER BY start_seq
-          LIMIT 1
-            FOR UPDATE SKIP LOCKED)
-      RETURNING id, expansion_cursor, start_seq`);
-    const row = result.rows[0];
-    return row ? { alarmId: row.id, cursor: row.expansion_cursor, startSeq: row.start_seq } : undefined;
+    return 'busy';
   }
 
   private async expand(task: ExpansionTask): Promise<void> {
     let cursor = task.cursor;
     let failures = 0;
-    this.logger.log('펼치기 시작', { fromCursor: cursor });
-    while (!this.stopping) {
-      const page = await this.client.listUsers(cursor, this.config.USERS_PAGE_SIZE, this.config.USERS_TIMEOUT_MS);
-      if (page.kind === 'error') {
+
+    this.logger.log('Expansion started', { fromCursor: cursor });
+
+    while (!this.loop.isStopping) {
+      const page = await this.client.listUsers(
+        cursor,
+        this.config.USERS_PAGE_SIZE,
+        this.config.USERS_TIMEOUT_MS,
+      );
+      const isFetchFailed = page.kind === 'error';
+      if (isFetchFailed) {
         failures += 1;
-        const delayMs = retryDelayMs(failures, { baseMs: this.config.RETRY_BASE_MS, maxMs: this.config.RETRY_MAX_MS, jitterRatio: this.config.RETRY_JITTER_RATIO });
-        this.logger.warn('사용자 조회 실패, 다시 시도한다', { code: page.code, delayMs });
+        const delayMs = retryDelayMs(failures, {
+          baseMs: this.config.RETRY_BASE_MS,
+          maxMs: this.config.RETRY_MAX_MS,
+          jitterRatio: this.config.RETRY_JITTER_RATIO,
+        });
+
+        this.logger.warn('Fetching users failed, retrying', {
+          code: page.code,
+          delayMs,
+        });
         await sleep(delayMs);
         continue;
       }
+
       failures = 0;
-      const pageCursor = cursor;
-      const { result: step, finished } = await durable(
-        () =>
-          withAlarmLock(this.db, task.alarmId, async (tx, alarm) => {
-            // 취소됐거나, 넘겨받혔거나, 이미 다른 워커가 이 페이지를 넣었으면 멈춘다.
-            if (alarm.status !== AlarmStatus.SENDING || alarm.expansionOwner !== this.workerId || alarm.expansionCursor !== pageCursor) {
-              return 'stop' as const;
-            }
-            if (page.users.length > 0) {
-              await tx
-                .insert(deliveries)
-                .values(page.users.map((user) => ({ alarmId: task.alarmId, recipientId: user.id, priority: 1, startSeq: task.startSeq })))
-                .onConflictDoNothing();
-            }
-            const done = page.nextCursor === null;
-            await tx.execute(sql`
-              UPDATE alarms SET expansion_cursor = ${page.nextCursor}, expansion_done = ${done}
-               WHERE id = ${task.alarmId} AND expansion_owner = ${this.workerId}`);
-            return done ? ('done' as const) : ('continue' as const);
-          }),
-        (error) => this.onFatal('펼치기 페이지를 기록하지 못했다', error),
-      );
-      if (step !== 'stop') this.metrics.expansionPages.inc();
-      if (step === 'done') this.logger.log('펼치기 완료', { finished });
-      if (step !== 'continue') return;
+      const step = await this.savePage(task, cursor, page);
+      const isFinished = step !== 'continue';
+      if (isFinished) return;
       cursor = page.nextCursor;
     }
+  }
+
+  private async savePage(
+    task: ExpansionTask,
+    pageCursor: string | null,
+    page: UsersPage,
+  ): Promise<PageStep> {
+    const { result: step, finished } = await durable(
+      () =>
+        withAlarmLock(
+          this.db,
+          task.alarmId,
+          async (tx, alarm): Promise<PageStep> => {
+            const isSending = alarm.status === AlarmStatus.SENDING;
+            const isMine = alarm.expansionOwner === this.workerId;
+            const isExpectedPage = alarm.expansionCursor === pageCursor;
+            // 취소됐거나, 넘겨받혔거나, 이 페이지가 이미 들어갔으면 멈춘다.
+            const isMyNextPage = isSending && isMine && isExpectedPage;
+            if (!isMyNextPage) return 'stop';
+            await this.repository.savePage(
+              tx,
+              task,
+              page.users.map((user) => user.id),
+              page.nextCursor,
+            );
+
+            return page.nextCursor === null ? 'done' : 'continue';
+          },
+        ),
+      (error) => this.onFatal('Could not record an expansion page', error),
+    );
+    const isSaved = step !== 'stop';
+    if (isSaved) this.metrics.expansionPages.inc();
+    const isDone = step === 'done';
+    if (isDone) this.logger.log('Expansion finished', { finished });
+
+    return step;
   }
 }

@@ -4,10 +4,17 @@ import { decideAfterLookup } from '../../shared/domain/send-outcome';
 import { clientRefOf } from '../../shared/domain/status';
 import { ExternalApiClient } from '../../shared/external/external-api.client';
 import { withLogContext } from '../../shared/logging/log-context';
-import { DeliveryStore, ReconcileItem } from '../dispatch/delivery-store';
+import {
+  DeliveryRepository,
+  ReconcileItem,
+} from '../dispatch/delivery.repository';
 import { WorkerMetrics } from '../metrics/worker-metrics';
-import { durable, sleep } from '../runtime/loop-utils';
+import { durable } from '../runtime/loop-utils';
+import { PollingLoop, Tick } from '../runtime/polling-loop';
 import { retryOptions } from '../runtime/retry-options';
+
+/** 한 바퀴에 결과를 확인하는 최대 건수. */
+const RECONCILE_BATCH = 20;
 
 /**
  * 결과 확인 (ADR-0002). 보냈는지 모르는 건을 clientRef로 조회해 확정한다.
@@ -15,63 +22,103 @@ import { retryOptions } from '../runtime/retry-options';
  * 조회가 실패하면 다시 보내지 않고 조회만 다시 한다.
  */
 export class Reconciler {
-  private stopping = false;
-  private loopDone: Promise<void> = Promise.resolve();
+  private readonly loop: PollingLoop;
 
   constructor(
     private readonly config: AppConfig,
-    private readonly store: DeliveryStore,
+    private readonly deliveries: DeliveryRepository,
     private readonly client: ExternalApiClient,
     private readonly metrics: WorkerMetrics,
     private readonly logger: LoggerService,
     private readonly onFatal: (reason: string, error?: unknown) => never,
-  ) {}
+  ) {
+    this.loop = new PollingLoop(
+      {
+        name: 'reconcile',
+        idleMs: config.IDLE_POLL_MS,
+        logger,
+        onError: (loop) => metrics.loopErrors.inc({ loop }),
+      },
+      () => this.tick(),
+    );
+  }
 
   start(): void {
-    this.loopDone = this.loop();
+    this.loop.start();
   }
 
-  async stop(): Promise<void> {
-    this.stopping = true;
-    await this.loopDone;
+  stop(): Promise<void> {
+    return this.loop.stop();
   }
 
-  private async loop(): Promise<void> {
-    while (!this.stopping) {
-      try {
-        const items = await this.store.claimReconcile(20, this.config.RECONCILE_CLAIM_LEASE_MS);
-        if (items.length === 0) {
-          await sleep(this.config.IDLE_POLL_MS);
-          continue;
-        }
-        await Promise.all(items.map((item) => this.reconcile(item)));
-      } catch (error) {
-        this.logger.error('결과 확인 루프 오류', error as Error);
-        await sleep(this.config.IDLE_POLL_MS);
-      }
-    }
+  private async tick(): Promise<Tick> {
+    const items = await this.deliveries.claimReconcile(
+      RECONCILE_BATCH,
+      this.config.RECONCILE_CLAIM_LEASE_MS,
+    );
+    const isIdle = items.length === 0;
+    if (isIdle) return 'idle';
+    await Promise.all(items.map((item) => this.reconcile(item)));
+
+    return 'busy';
   }
 
   private reconcile(item: ReconcileItem): Promise<void> {
-    return withLogContext({ alarmId: item.alarmId, deliveryId: String(item.id), attempt: item.attempts }, async () => {
-      const lookup = await this.client.lookupMessages(clientRefOf(item.alarmId, item.recipientId), this.config.LOOKUP_TIMEOUT_MS);
-      const { decision, outcome } = await durable(
-        () =>
-          this.store.recordReconcile(item, (alarmCanceling) =>
-            decideAfterLookup(lookup, alarmCanceling, item.attempts, retryOptions(this.config)),
-          ),
-        (error) => this.onFatal('결과 확인을 기록하지 못했다', error),
-      );
-      this.metrics.reconciles.inc({ result: decision.kind });
-      if (decision.kind === 'sent' && decision.duplicate) {
-        this.metrics.duplicates.inc();
-        this.logger.error('중복 발송이 확인됐다', { recipientId: item.recipientId });
-      }
-      if (decision.kind === 'retry_lookup') {
-        this.logger.warn('발송 내역 조회 실패, 조회만 다시 한다', { recipientId: item.recipientId, delayMs: decision.delayMs });
-      }
-      this.logger.debug?.('결과 확인', { recipientId: item.recipientId, lookup, decision, applied: outcome.applied });
-      if (outcome.applied && outcome.finished) this.logger.log('알림 종료', { alarmId: item.alarmId, status: outcome.finished });
-    });
+    return withLogContext(
+      {
+        alarmId: item.alarmId,
+        deliveryId: String(item.id),
+        attempt: item.attempts,
+      },
+      async () => {
+        const lookup = await this.client.lookupMessages(
+          clientRefOf(item.alarmId, item.recipientId),
+          this.config.LOOKUP_TIMEOUT_MS,
+        );
+        const { decision, outcome } = await durable(
+          () =>
+            this.deliveries.recordReconcile(item, (isAlarmCanceling) =>
+              decideAfterLookup(
+                lookup,
+                isAlarmCanceling,
+                item.attempts,
+                retryOptions(this.config),
+              ),
+            ),
+          (error) => this.onFatal('Could not record a reconcile result', error),
+        );
+
+        this.metrics.reconciles.inc({ result: decision.kind });
+        const isDuplicate = decision.kind === 'sent' && decision.duplicate;
+        if (isDuplicate) {
+          this.metrics.duplicates.inc();
+          this.logger.error('Duplicate send confirmed', {
+            recipientId: item.recipientId,
+          });
+        }
+
+        const isLookupRetry = decision.kind === 'retry_lookup';
+        if (isLookupRetry) {
+          this.logger.warn('Message lookup failed, retrying the lookup only', {
+            recipientId: item.recipientId,
+            delayMs: decision.delayMs,
+          });
+        }
+
+        this.logger.debug?.('Reconciled', {
+          recipientId: item.recipientId,
+          lookup,
+          decision,
+          applied: outcome.applied,
+        });
+        const isAlarmFinished = outcome.applied && outcome.finished !== null;
+        if (isAlarmFinished) {
+          this.logger.log('Alarm finished', {
+            alarmId: item.alarmId,
+            status: outcome.finished,
+          });
+        }
+      },
+    );
   }
 }

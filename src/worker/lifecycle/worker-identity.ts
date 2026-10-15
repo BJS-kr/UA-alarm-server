@@ -9,11 +9,16 @@ import { randomBytes } from 'node:crypto';
 export function newWorkerId(): number {
   const bytes = randomBytes(7);
   let value = 0;
+
   for (const byte of bytes) value = value * 256 + byte;
+
   return (value % 2 ** 52) + 1;
 }
 
 /** 무효 선언이 워커의 모든 세션을 찾을 수 있도록 application_name에 ID를 단다 (ADR-0004). */
-export function workerApplicationName(workerId: number, role: 'lock' | 'pool'): string {
+export function workerApplicationName(
+  workerId: number,
+  role: 'lock' | 'pool',
+): string {
   return `alarm-worker:${workerId}:${role}`;
 }

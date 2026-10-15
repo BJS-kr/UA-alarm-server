@@ -7,7 +7,8 @@ import { AlarmStatus } from './status';
  * - 목표 상태로 갈 수 없으면 409다.
  * - 응답 시점에 일이 아직 진행 중이면 202, 끝났으면 200이다.
  */
-export type ActionResponse = { kind: 'success'; httpStatus: 200 | 202 } | { kind: 'conflict' };
+export type ActionResponse =
+  { kind: 'success'; httpStatus: 200 | 202 } | { kind: 'conflict' };
 
 export function sendResponseFor(status: AlarmStatus): ActionResponse {
   switch (status) {
@@ -20,7 +21,7 @@ export function sendResponseFor(status: AlarmStatus): ActionResponse {
       return { kind: 'conflict' };
     case AlarmStatus.CREATED:
       // 전이가 성공했다면 CREATED로 남을 수 없다. 여기에 오면 호출 순서가 잘못된 것이다.
-      throw new Error('발송 시작 응답을 CREATED 상태로 정할 수 없다');
+      throw new Error('Cannot decide a send response for a CREATED alarm');
   }
 }
 
@@ -34,6 +35,6 @@ export function cancelResponseFor(status: AlarmStatus): ActionResponse {
       return { kind: 'conflict' };
     case AlarmStatus.CREATED:
     case AlarmStatus.SENDING:
-      throw new Error(`취소 응답을 ${status} 상태로 정할 수 없다`);
+      throw new Error(`Cannot decide a cancel response for a ${status} alarm`);
   }
 }

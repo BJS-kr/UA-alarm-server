@@ -9,7 +9,10 @@ const TRACEPARENT = /^[\da-f]{2}-([\da-f]{32})-[\da-f]{16}-[\da-f]{2}$/;
 export function traceIdFrom(header: string | string[] | undefined): string {
   const value = Array.isArray(header) ? header[0] : header;
   const match = value ? TRACEPARENT.exec(value.trim().toLowerCase()) : null;
-  if (match && !/^0+$/.test(match[1])) return match[1];
+  // 모두 0인 trace-id는 표준상 무효다.
+  const isValidParent = match !== null && !/^0+$/.test(match[1]);
+  if (isValidParent) return match[1];
+
   return randomBytes(16).toString('hex');
 }
 
@@ -18,8 +21,9 @@ export function traceMiddleware(logger: LoggerService) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const traceId = traceIdFrom(req.headers.traceparent);
     const startedAt = process.hrtime.bigint();
+
     res.on('finish', () => {
-      logger.log('요청 처리', {
+      logger.log('Request handled', {
         traceId,
         method: req.method,
         path: req.originalUrl,

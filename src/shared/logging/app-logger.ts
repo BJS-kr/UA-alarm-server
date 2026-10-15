@@ -3,7 +3,9 @@ import { logContext } from './log-context';
 import { maskSensitive } from './masking';
 
 export function logLevelsFor(level: 'info' | 'debug'): LogLevel[] {
-  return level === 'debug' ? ['fatal', 'error', 'warn', 'log', 'debug', 'verbose'] : ['fatal', 'error', 'warn', 'log'];
+  return level === 'debug'
+    ? ['fatal', 'error', 'warn', 'log', 'debug', 'verbose']
+    : ['fatal', 'error', 'warn', 'log'];
 }
 
 interface JsonLogOptions {
@@ -11,7 +13,7 @@ interface JsonLogOptions {
   logLevel: LogLevel;
   writeStreamType?: 'stdout' | 'stderr';
   errorStack?: unknown;
-  params?: Record<string, any>;
+  params?: Record<string, unknown>;
   error?: Error;
 }
 
@@ -30,21 +32,37 @@ interface JsonLogObject {
  */
 export class AppLogger extends ConsoleLogger {
   constructor(level: 'info' | 'debug', context?: string) {
-    super(context ?? 'App', { json: true, logLevels: logLevelsFor(level), flattenParams: true });
+    super(context ?? 'App', {
+      json: true,
+      logLevels: logLevelsFor(level),
+      flattenParams: true,
+    });
   }
 
-  protected getJsonLogObject(message: unknown, options: JsonLogOptions): JsonLogObject {
+  protected getJsonLogObject(
+    message: unknown,
+    options: JsonLogOptions,
+  ): JsonLogObject {
     const masked: JsonLogOptions = {
       ...options,
-      params: options.params ? (maskSensitive(options.params) as Record<string, unknown>) : undefined,
+      params: options.params
+        ? (maskSensitive(options.params) as Record<string, unknown>)
+        : undefined,
     };
-    const logObject = super.getJsonLogObject(maskSensitive(message), masked) as JsonLogObject;
+    const logObject = super.getJsonLogObject(
+      maskSensitive(message),
+      masked,
+    ) as JsonLogObject;
     const ctx = logContext.getStore();
-    if (ctx) {
+    const isInContext = ctx !== undefined;
+    if (isInContext) {
       for (const [key, value] of Object.entries(ctx)) {
-        if (value !== undefined && !(key in logObject)) logObject[key] = value;
+        // 줄에 직접 넘긴 값이 맥락 값보다 앞선다.
+        const isMissingFromLine = value !== undefined && !(key in logObject);
+        if (isMissingFromLine) logObject[key] = value;
       }
     }
+
     return logObject;
   }
 }

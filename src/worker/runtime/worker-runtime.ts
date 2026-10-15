@@ -5,10 +5,12 @@ import { createDb, createPool, Db } from '../../shared/db/database';
 import { waitForDatabase } from '../../shared/db/wait-for-database';
 import { ExternalApiClient } from '../../shared/external/external-api.client';
 import { SendBreaker } from '../breaker/send-breaker';
+import { CancellationRepository } from '../cancellation/cancellation.repository';
 import { Canceller } from '../cancellation/canceller';
-import { DeliveryStore } from '../dispatch/delivery-store';
+import { DeliveryRepository } from '../dispatch/delivery.repository';
 import { Dispatcher } from '../dispatch/dispatcher';
 import { Expander } from '../expansion/expander';
+import { ExpansionRepository } from '../expansion/expansion.repository';
 import { Housekeeper } from '../lifecycle/housekeeper';
 import { workerApplicationName } from '../lifecycle/worker-identity';
 import { WorkerSession } from '../lifecycle/worker-session';
@@ -42,18 +44,41 @@ export class WorkerRuntime {
 
   constructor(private readonly options: WorkerRuntimeOptions) {
     const { config, workerId, logger, onFatal } = options;
+
     this.workerId = workerId;
-    const onDbError = (error: Error) => logger.warn('DB 연결이 끊겼다', { error: error.message });
-    this.pool = createPool(config.DATABASE_URL!, workerApplicationName(workerId, 'pool'), 10, onDbError);
+    const onDbError = (error: Error) =>
+      logger.warn('Database connection lost', { error: error.message });
+
+    this.pool = createPool(
+      config.DATABASE_URL!,
+      workerApplicationName(workerId, 'pool'),
+      10,
+      onDbError,
+    );
     this.db = createDb(this.pool);
     // 토큰 받기와 꺼내기 전용. 결과 기록 트랜잭션과 연결을 다투지 않게 따로 둔다.
-    this.loopPool = createPool(config.DATABASE_URL!, workerApplicationName(workerId, 'pool'), 2, onDbError);
+    this.loopPool = createPool(
+      config.DATABASE_URL!,
+      workerApplicationName(workerId, 'pool'),
+      2,
+      onDbError,
+    );
     const loopDb = createDb(this.loopPool);
+
     // 무효 선언과 넘겨받기 전용. 다른 워커가 알림 행 잠금을 쥔 채 멈추면, 결과 기록 트랜잭션들이 그 잠금을 기다리며
     // 기본 풀을 모두 붙잡는다. 그 잠금을 푸는 것이 무효 선언이므로, 무효 선언은 연결을 따로 가져야 한다 (ADR-0004).
-    this.housekeepingPool = createPool(config.DATABASE_URL!, workerApplicationName(workerId, 'pool'), 1, onDbError);
+    this.housekeepingPool = createPool(
+      config.DATABASE_URL!,
+      workerApplicationName(workerId, 'pool'),
+      1,
+      onDbError,
+    );
     const housekeepingDb = createDb(this.housekeepingPool);
-    this.client = new ExternalApiClient(config.EXTERNAL_API_BASE_URL, config.MAX_IN_FLIGHT);
+
+    this.client = new ExternalApiClient(
+      config.EXTERNAL_API_BASE_URL,
+      config.MAX_IN_FLIGHT,
+    );
     this.session = new WorkerSession(
       {
         connectionString: config.DATABASE_URL!,
@@ -62,21 +87,30 @@ export class WorkerRuntime {
         sendGuardMs: config.SEND_GUARD_MS,
       },
       logger,
-      (reason) => onFatal(`잠금을 잃었다: ${reason}`),
+      (reason) => onFatal(`Lost the worker lock: ${reason}`),
     );
-    const store = new DeliveryStore(this.db, workerId, loopDb);
-    const bucket = new TokenBucket(loopDb, config.RATE_LIMIT_PER_SEC, config.RATE_BUCKET_CAPACITY);
+    const deliveries = new DeliveryRepository(this.db, workerId, loopDb);
+    const bucket = new TokenBucket(
+      loopDb,
+      config.RATE_LIMIT_PER_SEC,
+      config.RATE_BUCKET_CAPACITY,
+    );
     const breaker = new SendBreaker(
       config.BREAKER_WINDOW,
       config.BREAKER_FAILURE_RATIO,
       bucket,
-      { pauseMinMs: config.BREAKER_PAUSE_MIN_MS, pauseMaxMs: config.BREAKER_PAUSE_MAX_MS, streakWindowMs: config.BREAKER_STREAK_WINDOW_MS },
+      {
+        pauseMinMs: config.BREAKER_PAUSE_MIN_MS,
+        pauseMaxMs: config.BREAKER_PAUSE_MAX_MS,
+        streakWindowMs: config.BREAKER_STREAK_WINDOW_MS,
+      },
       logger,
       () => this.metrics.breakerTrips.inc(),
     );
+
     this.dispatcher = new Dispatcher({
       config,
-      store,
+      deliveries,
       bucket,
       client: this.client,
       session: this.session,
@@ -85,13 +119,37 @@ export class WorkerRuntime {
       logger,
       onFatal,
     });
-    this.reconciler = new Reconciler(config, store, this.client, this.metrics, logger, onFatal);
-    this.expander = new Expander(config, this.db, workerId, this.client, this.metrics, logger, onFatal);
-    this.canceller = new Canceller(config, this.db, workerId, logger, onFatal);
+    this.reconciler = new Reconciler(
+      config,
+      deliveries,
+      this.client,
+      this.metrics,
+      logger,
+      onFatal,
+    );
+    this.expander = new Expander(
+      config,
+      this.db,
+      new ExpansionRepository(this.db, workerId),
+      workerId,
+      this.client,
+      this.metrics,
+      logger,
+      onFatal,
+    );
+    this.canceller = new Canceller(
+      config,
+      this.db,
+      new CancellationRepository(this.db, workerId),
+      workerId,
+      this.metrics,
+      logger,
+      onFatal,
+    );
     this.housekeeper = new Housekeeper(
       config,
       housekeepingDb,
-      new DeliveryStore(housekeepingDb, workerId, housekeepingDb),
+      new DeliveryRepository(housekeepingDb, workerId, housekeepingDb),
       workerId,
       this.metrics,
       logger,
@@ -107,7 +165,7 @@ export class WorkerRuntime {
     this.reconciler.start();
     this.expander.start();
     this.canceller.start();
-    this.options.logger.log('worker 시작', { workerId: this.workerId });
+    this.options.logger.log('Worker started', { workerId: this.workerId });
   }
 
   isLive(): boolean {
@@ -119,14 +177,19 @@ export class WorkerRuntime {
    * 보내지 않은 건은 반납한 뒤, 잠금 연결을 닫는다.
    */
   async stop(): Promise<void> {
-    this.options.logger.log('정상 종료 시작');
+    this.options.logger.log('Graceful shutdown started');
     await this.dispatcher.stop(this.options.config.SHUTDOWN_GRACE_MS);
-    await Promise.all([this.reconciler.stop(), this.expander.stop(), this.canceller.stop(), this.housekeeper.stop()]);
+    await Promise.all([
+      this.reconciler.stop(),
+      this.expander.stop(),
+      this.canceller.stop(),
+      this.housekeeper.stop(),
+    ]);
     await this.session.stop();
     this.client.close();
     await this.pool.end();
     await this.loopPool.end();
     await this.housekeepingPool.end();
-    this.options.logger.log('정상 종료 완료');
+    this.options.logger.log('Graceful shutdown complete');
   }
 }

@@ -1,10 +1,19 @@
-import { BeforeApplicationShutdown, DynamicModule, Injectable, LoggerService, Module, OnApplicationBootstrap } from '@nestjs/common';
+import {
+  BeforeApplicationShutdown,
+  DynamicModule,
+  Injectable,
+  LoggerService,
+  Module,
+  OnApplicationBootstrap,
+} from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AppConfig } from '../shared/config/app-config';
 import { WorkerRuntime } from './runtime/worker-runtime';
 
 @Injectable()
-class WorkerLifecycle implements OnApplicationBootstrap, BeforeApplicationShutdown {
+class WorkerLifecycle
+  implements OnApplicationBootstrap, BeforeApplicationShutdown
+{
   constructor(private readonly runtime: WorkerRuntime) {}
 
   onApplicationBootstrap(): Promise<void> {
@@ -26,13 +35,24 @@ export class WorkerModule {
   ): DynamicModule {
     return {
       module: WorkerModule,
-      imports: [ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true, load: [() => ({ app: config })] })],
+      imports: [
+        ConfigModule.forRoot({
+          isGlobal: true,
+          ignoreEnvFile: true,
+          load: [() => ({ app: config })],
+        }),
+      ],
       providers: [
-        { provide: AppConfig, inject: [ConfigService], useFactory: (cs: ConfigService) => cs.getOrThrow<AppConfig>('app') },
+        {
+          provide: AppConfig,
+          inject: [ConfigService],
+          useFactory: (cs: ConfigService) => cs.getOrThrow<AppConfig>('app'),
+        },
         {
           provide: WorkerRuntime,
           inject: [AppConfig],
-          useFactory: (appConfig: AppConfig) => new WorkerRuntime({ config: appConfig, workerId, logger, onFatal }),
+          useFactory: (appConfig: AppConfig) =>
+            new WorkerRuntime({ config: appConfig, workerId, logger, onFatal }),
         },
         WorkerLifecycle,
       ],
