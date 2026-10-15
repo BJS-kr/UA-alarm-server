@@ -41,7 +41,9 @@ export class WorkerRuntime {
   constructor(private readonly options: WorkerRuntimeOptions) {
     const { config, workerId, logger, onFatal } = options;
     this.workerId = workerId;
-    this.pool = createPool(config.DATABASE_URL!, workerApplicationName(workerId, 'pool'), 10);
+    this.pool = createPool(config.DATABASE_URL!, workerApplicationName(workerId, 'pool'), 10, (error) =>
+      logger.warn('쉬던 DB 연결이 끊겼다', { error: error.message }),
+    );
     this.db = createDb(this.pool);
     this.client = new ExternalApiClient(config.EXTERNAL_API_BASE_URL, config.MAX_IN_FLIGHT);
     this.session = new WorkerSession(

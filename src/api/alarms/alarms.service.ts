@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, asc, desc, eq, gt, lt, sql, SQL } from 'drizzle-orm';
-import { DB, Db } from '../../shared/db/database';
+import { DB } from '../../shared/db/database';
+import type { Db } from '../../shared/db/database';
 import { alarmRecipients, alarms, deliveries } from '../../shared/db/schema';
 import { cancelResponseFor, sendResponseFor } from '../../shared/domain/alarm-actions';
 import { decodeCursor, encodeCursor } from '../../shared/domain/cursor';

@@ -8,7 +8,7 @@ import { SendBreaker } from '../breaker/send-breaker';
 import { WorkerSession } from '../lifecycle/worker-session';
 import { WorkerMetrics } from '../metrics/worker-metrics';
 import { TokenBucket } from '../rate-limit/token-bucket';
-import { durable, monotonicMs, sleep } from '../runtime/loop-utils';
+import { durable, monotonicMs, sleep, waitAtMost } from '../runtime/loop-utils';
 import { retryOptions } from '../runtime/retry-options';
 import { ClaimedDelivery, DeliveryStore } from './delivery-store';
 
@@ -49,7 +49,7 @@ export class Dispatcher {
   async stop(graceMs: number): Promise<void> {
     this.stopping = true;
     await this.loopDone;
-    await Promise.race([Promise.allSettled([...this.inFlight]), sleep(graceMs)]);
+    await waitAtMost(Promise.allSettled([...this.inFlight]), graceMs);
   }
 
   private async loop(): Promise<void> {

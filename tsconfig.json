@@ -8,6 +8,7 @@
     "rootDir": ".",
     "outDir": "dist",
     "strict": true,
+    "isolatedModules": true,
     "esModuleInterop": true,
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,

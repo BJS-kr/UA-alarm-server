@@ -13,7 +13,7 @@ RUN npm run build
 FROM deps AS test
 COPY . .
 RUN npm run build
-CMD ["npx", "jest", "--ci"]
+CMD ["npm", "test", "--", "--ci"]
 
 FROM node:24-bookworm-slim AS runtime
 ENV NODE_ENV=production

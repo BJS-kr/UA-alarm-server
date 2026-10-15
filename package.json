@@ -12,9 +12,9 @@
     "db:generate": "drizzle-kit generate",
     "openapi:export": "node dist/scripts/export-openapi.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "jest",
-    "test:unit": "jest --selectProjects unit",
-    "test:integration": "jest --selectProjects integration",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:unit": "node --experimental-vm-modules node_modules/jest/bin/jest.js --selectProjects unit",
+    "test:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js --selectProjects integration",
     "test:mutation": "stryker run"
   },
   "engines": {

@@ -14,7 +14,9 @@ async function bootstrap(): Promise<void> {
   // 실제 적용된 설정값을 한 번 남긴다. 비밀값은 가린다 (ADR-0030).
   logger.log('설정 적용', describeConfig(config));
 
-  const pool = createPool(config.DATABASE_URL!, 'alarm-api', 10);
+  const pool = createPool(config.DATABASE_URL!, 'alarm-api', 10, (error) =>
+    logger.warn('쉬던 DB 연결이 끊겼다', { error: error.message }),
+  );
   await waitForDatabase(pool, logger);
 
   const app = await createApiApp(config, pool, logger);

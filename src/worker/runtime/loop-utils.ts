@@ -2,6 +2,19 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** work가 끝나거나 ms가 지나면 끝난다. 먼저 끝나면 타이머를 지워 종료를 붙잡지 않는다. */
+export async function waitAtMost(work: Promise<unknown>, ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  try {
+    await Promise.race([work, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** 단조 시계 기준 ms. 벽시계 보정에 영향받지 않는다. */
 export function monotonicMs(): number {
   return Number(process.hrtime.bigint() / 1_000_000n);

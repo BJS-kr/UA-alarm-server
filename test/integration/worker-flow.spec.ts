@@ -1,0 +1,163 @@
+import { sql } from 'drizzle-orm';
+import { clientRefOf } from '../../src/shared/domain/status';
+import { FakeExternalApi } from './support/fake-external-api';
+import {
+  alarmStatus,
+  deliveryStatuses,
+  insertAlarm,
+  RunningWorker,
+  startWorker,
+  testConfig,
+  userIds,
+  waitFor,
+} from './support/fixtures';
+import { createTestDatabase, TestDatabase } from './support/test-database';
+
+describe('워커 전체 흐름 (ADR-0002, 0006, 0009, 0011, 0014)', () => {
+  let database: TestDatabase;
+  let fake: FakeExternalApi;
+  let fakeUrl: string;
+  let workers: RunningWorker[];
+
+  beforeEach(async () => {
+    database = await createTestDatabase();
+    fake = new FakeExternalApi();
+    fakeUrl = await fake.start();
+    workers = [];
+  });
+
+  afterEach(async () => {
+    await Promise.all(workers.map((w) => w.runtime.stop().catch(() => undefined)));
+    await fake.stop();
+    await database.drop();
+  });
+
+  const start = async (overrides: Record<string, string> = {}, count = 1) => {
+    for (let i = 0; i < count; i++) workers.push(await startWorker(testConfig(database.url, fakeUrl, overrides)));
+  };
+
+  it('장애를 섞어도 수신자마다 외부 기록이 정확히 한 번이다', async () => {
+    const users = userIds(200);
+    fake.users = users;
+    const blocked = new Set(['u_000005', 'u_000006']);
+    fake.behavior = (recipientId, attempt) => {
+      const n = Number(recipientId.slice(2));
+      if (blocked.has(recipientId)) return { type: 'reject' };
+      if (attempt === 1 && n % 25 === 0) return { type: 'record_then_hang', hangMs: 1500 }; // 접수는 됐는데 응답이 늦다
+      if (attempt === 1 && n % 10 === 0) return { type: 'error', status: 503 };
+      if (attempt === 1 && n % 40 === 1) return { type: 'rate_limit' };
+      return { type: 'accept' };
+    };
+    const alarm = await insertAlarm(database.db, { type: 'BULK', expansionDone: false });
+    await start({}, 2);
+
+    await waitFor(async () => (await alarmStatus(database.db, alarm.id)) === 'COMPLETED', 30_000);
+
+    const statuses = await deliveryStatuses(database.db, alarm.id);
+    expect(Object.keys(statuses)).toHaveLength(200);
+    for (const user of users) {
+      const records = fake.recordsFor(clientRefOf(alarm.id, user));
+      if (blocked.has(user)) {
+        expect([user, statuses[user], records]).toEqual([user, 'FAILED', 0]);
+      } else {
+        expect([user, statuses[user], records]).toEqual([user, 'SENT', 1]);
+      }
+    }
+    // 응답이 늦었던 건은 결과 확인으로 확정했다. 다시 보내지 않았다.
+    for (const user of users.filter((u) => Number(u.slice(2)) % 25 === 0)) {
+      expect(fake.received.filter((r) => r.recipientId === user)).toHaveLength(1);
+    }
+    expect(workers.reduce((sum, w) => sum + w.fatal.length, 0)).toBe(0);
+  });
+
+  it('대량 발송 중에 시작한 긴급 알림이 먼저 나간다', async () => {
+    fake.users = userIds(400);
+    const bulk = await insertAlarm(database.db, { type: 'BULK', expansionDone: false });
+    await start({ RATE_LIMIT_PER_SEC: '100', RATE_BUCKET_CAPACITY: '10' }, 2);
+    await waitFor(async () => fake.received.length > 50);
+
+    const urgentStartedAt = Date.now();
+    const urgentRecipients = ['v_1', 'v_2', 'v_3', 'v_4', 'v_5'];
+    const urgent = await insertAlarm(database.db, { type: 'URGENT', recipients: urgentRecipients });
+    await waitFor(async () => (await alarmStatus(database.db, urgent.id)) === 'COMPLETED', 10_000);
+
+    const urgentPosts = fake.received.filter((r) => r.alarmId === urgent.id);
+    expect(urgentPosts).toHaveLength(5);
+    const lastUrgentAt = Math.max(...urgentPosts.map((r) => r.at));
+    // 긴급 건이 대량 때문에 기다리는 시간은 이미 꺼내 둔 대량 묶음이 나가는 동안뿐이다 (워커당 최대 10건).
+    const bulkBetween = fake.received.filter((r) => r.alarmId === bulk.id && r.at > urgentStartedAt && r.at < lastUrgentAt);
+    expect(bulkBetween.length).toBeLessThanOrEqual(2 * 10);
+    expect(lastUrgentAt - urgentStartedAt).toBeLessThan(1000);
+    expect(await alarmStatus(database.db, bulk.id)).toBe('SENDING');
+  });
+
+  it('워커 3대가 처리량 제한을 함께 지켜 외부 서비스가 429를 내지 않는다', async () => {
+    fake.users = userIds(300);
+    fake.enableRateLimit(100, 50); // mock과 같은 토큰 버킷: 거절된 요청은 토큰을 쓰지 않는다
+    const alarm = await insertAlarm(database.db, { type: 'BULK', expansionDone: false });
+    const startedAt = Date.now();
+    await start({ RATE_LIMIT_PER_SEC: '100', RATE_BUCKET_CAPACITY: '10' }, 3);
+    await waitFor(async () => (await alarmStatus(database.db, alarm.id)) === 'COMPLETED', 30_000);
+    const elapsedSec = (Date.now() - startedAt) / 1000;
+
+    expect(fake.rateLimited).toBe(0);
+    expect(fake.received).toHaveLength(300);
+    // 처리량을 버리지 않는다: 300건 ÷ 초당 100 = 3초에 가깝다.
+    expect(elapsedSec).toBeLessThan(6);
+  });
+
+  it('펼치기는 저장된 커서부터 이어 가고 중복 행을 만들지 않는다 (ADR-0006)', async () => {
+    const users = userIds(250);
+    fake.users = users;
+    const alarm = await insertAlarm(database.db, { type: 'BULK', expansionDone: false });
+    // 죽은 워커(999)가 앞의 두 페이지(100명)를 넣고 커서를 저장한 상태
+    for (const user of users.slice(0, 100)) {
+      await database.db.execute(sql`
+        INSERT INTO deliveries (alarm_id, recipient_id, priority, start_seq) VALUES (${alarm.id}, ${user}, 1, ${alarm.startSeq})`);
+    }
+    await database.db.execute(sql`
+      UPDATE alarms SET expansion_owner = 999, expansion_cursor = ${Buffer.from('100').toString('base64url')} WHERE id = ${alarm.id}`);
+
+    await start();
+    await waitFor(async () => (await alarmStatus(database.db, alarm.id)) === 'COMPLETED', 30_000);
+    expect(Object.keys(await deliveryStatuses(database.db, alarm.id))).toHaveLength(250);
+    for (const user of users) expect(fake.recordsFor(clientRefOf(alarm.id, user))).toBe(1);
+  });
+
+  it('발송 중 취소하면 새 발송이 멈추고, 이미 보낸 건은 SENT로 남는다 (ADR-0017)', async () => {
+    fake.users = userIds(300);
+    const alarm = await insertAlarm(database.db, { type: 'BULK', expansionDone: false });
+    await start({ RATE_LIMIT_PER_SEC: '100', RATE_BUCKET_CAPACITY: '10' });
+    await waitFor(async () => fake.received.length > 40);
+
+    await database.db.execute(sql`UPDATE alarms SET status = 'CANCELING' WHERE id = ${alarm.id} AND status = 'SENDING'`);
+    const canceledAt = Date.now();
+    await waitFor(async () => (await alarmStatus(database.db, alarm.id)) === 'CANCELED', 10_000);
+
+    // 취소 커밋 뒤에 새로 나간 요청은 이미 꺼내 둔 묶음뿐이다.
+    expect(fake.received.filter((r) => r.at > canceledAt + 200)).toHaveLength(0);
+    const statuses = Object.entries(await deliveryStatuses(database.db, alarm.id));
+    for (const [user, status] of statuses) {
+      expect([user, status, fake.recordsFor(clientRefOf(alarm.id, user))]).toEqual([user, status, status === 'SENT' ? 1 : 0]);
+    }
+    expect(statuses.filter(([, s]) => s === 'CANCELED').length).toBeGreaterThan(0);
+  });
+
+  it('정상 종료는 보낸 건의 결과를 기록하고 보내지 않은 건을 반납한다 (ADR-0007)', async () => {
+    fake.users = userIds(120);
+    fake.behavior = () => ({ type: 'accept', delayMs: 200 });
+    const alarm = await insertAlarm(database.db, { type: 'BULK', expansionDone: false });
+    await start({ RATE_LIMIT_PER_SEC: '100', RATE_BUCKET_CAPACITY: '10' });
+    await waitFor(async () => fake.received.length > 20);
+
+    const first = workers.shift()!;
+    await first.runtime.stop();
+    const leftovers = await database.db.execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM deliveries WHERE owner = ${first.runtime.workerId} AND status = 'IN_FLIGHT'`);
+    expect(leftovers.rows[0].n).toBe(0);
+
+    await start();
+    await waitFor(async () => (await alarmStatus(database.db, alarm.id)) === 'COMPLETED', 30_000);
+    for (const user of fake.users) expect(fake.recordsFor(clientRefOf(alarm.id, user))).toBe(1);
+  });
+});
