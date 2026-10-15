@@ -103,8 +103,8 @@ export function maskError(
     const isPrimitive =
       value === null ||
       (typeof value !== 'object' && typeof value !== 'function');
-    const isCopied =
-      isPrimitive && !(key in out) && key !== 'cause' && key !== 'errors';
+    // cause와 errors(배열)는 아래에서 따로 따라간다. 원시값 cause는 아래에서 같은 값으로 덮인다.
+    const isCopied = isPrimitive && !(key in out);
     if (isCopied) out[key] = maskErrorField(key, value);
   }
 

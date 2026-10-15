@@ -195,6 +195,7 @@ describe('마스킹 규칙 (ADR-0028)', () => {
 describe('오류 마스킹의 경계 (ADR-0028)', () => {
   it('오류 종류를 나타내는 필드는 숫자가 있어도 그대로 두고, 비밀 키는 가린다', () => {
     const error = Object.assign(new Error('x'), {
+      name: 'Pg1234Error',
       code: '23505',
       errno: '1234',
       syscall: 'connect6000',
@@ -204,6 +205,7 @@ describe('오류 마스킹의 경계 (ADR-0028)', () => {
     });
 
     expect(maskError(error)).toMatchObject({
+      name: 'Pg1234Error',
       code: '23505',
       errno: '1234',
       syscall: 'connect6000',
@@ -213,10 +215,22 @@ describe('오류 마스킹의 경계 (ADR-0028)', () => {
     });
   });
 
-  it('원시값이 아닌 필드는 옮기지 않는다 (바인딩 값 배열 등)', () => {
-    const error = Object.assign(new Error('x'), { params: ['482913'] });
+  it('문자열이 아닌 원시값과 null은 그대로 옮긴다', () => {
+    const error = Object.assign(new Error('x'), { line: 1234, hint: null });
 
-    expect(maskError(error)).not.toHaveProperty('params');
+    expect(maskError(error)).toMatchObject({ line: 1234, hint: null });
+  });
+
+  it('원시값이 아닌 필드와 함수는 옮기지 않고, cause가 없으면 cause 칸도 없다', () => {
+    const error = Object.assign(new Error('x'), {
+      params: ['482913'],
+      retry: () => 1,
+    });
+    const masked = maskError(error);
+
+    expect(masked).not.toHaveProperty('params');
+    expect(masked).not.toHaveProperty('retry');
+    expect(masked).not.toHaveProperty('cause');
   });
 
   it('Error가 아닌 cause도 가린다', () => {
@@ -227,12 +241,12 @@ describe('오류 마스킹의 경계 (ADR-0028)', () => {
     expect(object.cause).toEqual({ body: '****' });
   });
 
-  it('AggregateError의 오류들도 가린다', () => {
-    const error = new AggregateError([new Error('otp 482913')], 'many');
+  it('AggregateError의 오류들도 가리고, 같은 오류가 두 번 나와도 순환으로 보지 않는다', () => {
+    const shared = new Error('otp 482913');
+    const error = new AggregateError([shared, shared], 'many');
+    const errors = maskError(error).errors as Array<{ message: string }>;
 
-    expect(
-      (maskError(error).errors as Array<{ message: string }>)[0].message,
-    ).toBe('otp ******');
+    expect(errors.map((e) => e.message)).toEqual(['otp ******', 'otp ******']);
   });
 
   it('cause가 순환하거나 너무 깊으면 멈춘다', () => {
@@ -258,11 +272,22 @@ describe('오류 마스킹의 경계 (ADR-0028)', () => {
   });
 
   it('스택의 호출 위치 줄은 그대로 두고 메시지 줄만 가린다', () => {
-    const stack = 'Error: otp 482913\n    at f (/app/dist/x.js:1234:56)';
+    const stack =
+      'Error: failed at step 482913\n    at f (/app/dist/x.js:1234:56)';
+    const masked =
+      'Error: failed at step ******\n    at f (/app/dist/x.js:1234:56)';
 
-    expect(maskStack(stack)).toBe(
-      'Error: otp ******\n    at f (/app/dist/x.js:1234:56)',
-    );
+    expect(maskStack(stack)).toBe(masked);
+    // 호출 위치 줄을 남기는 것은 stack 필드뿐이다. 다른 글은 호출 위치처럼 보여도 가린다.
+    const error = Object.assign(new Error('x'), {
+      stack,
+      detail: 'x\n    at 482913',
+    });
+
+    expect(maskError(error)).toMatchObject({
+      stack: masked,
+      detail: 'x\n    at ******',
+    });
   });
 });
 
