@@ -95,6 +95,17 @@ services:
       postgres:
         condition: service_healthy
 
+  # 끝단 시나리오 실행기. scripts/e2e.sh가 쓴다 (ADR-0035).
+  e2e:
+    profiles: ['e2e']
+    build:
+      context: .
+      target: test
+    environment:
+      API_BASE_URL: http://api:3000
+      MOCK_BASE_URL: http://mock:4000
+      API_KEY: dev-api-key
+
   # docker compose --profile monitoring up (ADR-0027)
   prometheus:
     profiles: ['monitoring']
