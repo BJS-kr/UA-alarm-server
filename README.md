@@ -39,19 +39,19 @@ docker compose --profile monitoring up
 
 호스트에는 Docker만 있으면 됩니다.
 
-린트(ESLint), 포맷 확인(Prettier), 단위·통합 테스트 152개(단위 100, 통합 52)를 차례로 돌립니다. 실제 워커 프로세스를 `SIGSTOP`으로 멈추는 테스트는 Linux에서만 돌기 때문에, 테스트 컨테이너에서 실행합니다.
+린트(ESLint), 포맷 확인(Prettier), 단위·통합 테스트 155개(단위 102, 통합 53)를 차례로 돌립니다. 실제 워커 프로세스를 `SIGSTOP`으로 멈추는 테스트는 Linux에서만 돌기 때문에, 테스트 컨테이너에서 실행합니다.
 
 ```bash
 docker compose --profile test run --rm test
 ```
 
-변이 테스팅(Stryker). 도메인 로직, 설정 검증, 마스킹, HTTP 응답 분류 코드를 일부러 바꿔 보고 테스트가 그 변화를 잡는지 확인합니다. 최근 점수는 96.6%이고, 90% 아래면 실패합니다.
+변이 테스팅(Stryker). 도메인 로직, 설정 검증, 마스킹, HTTP 응답 분류 코드를 일부러 바꿔 보고 테스트가 그 변화를 잡는지 확인합니다. 최근 점수는 97.0%이고, 90% 아래면 실패합니다.
 
 ```bash
 docker compose --profile test run --rm test npm run test:mutation
 ```
 
-고의 결함 목록. 장애 대비 장치(펜싱, 무효 선언, 발송 직전 확인, 서킷 브레이커 등)와 꺼내기·완료 판정의 SQL을 하나씩 빼고, 그 장치가 막던 장애를 재현하는 테스트가 실제로 실패하는지 확인합니다. 장치가 있을 때 막는 테스트와 짝을 이뤄 "있으면 막고, 빼면 깨진다"를 둘 다 보여 줍니다. 최근 결과는 28개 중 28개 검출입니다. 장치별 표는 [docs/testing.md](docs/testing.md)에 있습니다.
+고의 결함 목록. 장애 대비 장치(펜싱, 무효 선언, 발송 직전 확인, 서킷 브레이커 등)와 꺼내기·완료 판정의 SQL을 하나씩 빼고, 그 장치가 막던 장애를 재현하는 테스트가 실제로 실패하는지 확인합니다. 장치가 있을 때 막는 테스트와 짝을 이뤄 "있으면 막고, 빼면 깨진다"를 둘 다 보여 줍니다. 최근 결과는 29개 중 29개 검출입니다. 장치별 표는 [docs/testing.md](docs/testing.md)에 있습니다.
 
 ```bash
 docker compose --profile test run --rm test npm run test:sabotage
@@ -124,7 +124,7 @@ CANCELED ◀──남은 건 정리── CANCELING
 
 ### 예시
 
-아래 응답은 이 저장소의 compose 스택에서 실제로 받은 값입니다.
+아래 응답은 이 저장소의 compose 스택(`scripts/e2e.sh`와 같은 구성, 사용자 2000명)에서 실제로 받은 값입니다.
 
 긴급 알림 생성. 대량 알림은 `"type": "BULK"`이고 `recipientIds`를 넣지 않습니다.
 
@@ -136,16 +136,16 @@ curl -i -X POST http://localhost:3000/v1/alarms \
 
 ```http
 HTTP/1.1 201 Created
-Location: /v1/alarms/01a14098-9680-71f2-8e7e-eac3f6de617e
+Location: /v1/alarms/01a14146-58cc-726c-84e1-d6dbcbe9ff46
 Content-Type: application/json; charset=utf-8
 
 {
-  "id": "01a14098-9680-71f2-8e7e-eac3f6de617e",
+  "id": "01a14146-58cc-726c-84e1-d6dbcbe9ff46",
   "type": "URGENT",
   "title": "서버 점검 안내",
   "body": "오늘 23시부터 30분간 점검합니다",
   "status": "CREATED",
-  "createdAt": "2026-10-15T17:25:04.254Z",
+  "createdAt": "2026-10-15T20:34:51.722Z",
   "startedAt": null,
   "finishedAt": null
 }
@@ -154,37 +154,105 @@ Content-Type: application/json; charset=utf-8
 발송 시작:
 
 ```bash
-curl -i -X POST http://localhost:3000/v1/alarms/01a14098-9680-71f2-8e7e-eac3f6de617e/send \
+curl -i -X POST http://localhost:3000/v1/alarms/01a14146-58cc-726c-84e1-d6dbcbe9ff46/send \
   -H 'Authorization: Bearer dev-api-key'
 ```
 
 ```http
 HTTP/1.1 202 Accepted
 
-{ "id": "01a14098-...", "status": "SENDING", "startedAt": "2026-10-15T17:25:04.442Z", "finishedAt": null, ... }
+{
+  "id": "01a14146-58cc-726c-84e1-d6dbcbe9ff46",
+  "status": "SENDING",
+  "startedAt": "2026-10-15T20:34:51.734Z",
+  "finishedAt": null
+}
 ```
 
 단건 조회. `counts`는 조회할 때 Delivery에서 셉니다.
 
 ```json
 {
-  "id": "01a14098-9680-71f2-8e7e-eac3f6de617e",
+  "id": "01a14146-58cc-726c-84e1-d6dbcbe9ff46",
   "type": "URGENT",
   "title": "서버 점검 안내",
   "body": "오늘 23시부터 30분간 점검합니다",
   "status": "COMPLETED",
-  "createdAt": "2026-10-15T17:25:04.254Z",
-  "startedAt": "2026-10-15T17:25:04.442Z",
-  "finishedAt": "2026-10-15T17:25:04.883Z",
-  "counts": { "total": 2, "pending": 0, "inFlight": 0, "unconfirmed": 0, "sent": 2, "failed": 0, "canceled": 0 },
-  "recipientIds": ["u_000001", "u_000002"]
+  "createdAt": "2026-10-15T20:34:51.722Z",
+  "startedAt": "2026-10-15T20:34:51.734Z",
+  "finishedAt": "2026-10-15T20:34:52.230Z",
+  "counts": {
+    "total": 2,
+    "pending": 0,
+    "inFlight": 0,
+    "unconfirmed": 0,
+    "sent": 2,
+    "failed": 0,
+    "canceled": 0
+  },
+  "recipientIds": [
+    "u_000001",
+    "u_000002"
+  ]
 }
 ```
 
 수신자별 결과. 다음 페이지는 `?cursor=<nextCursor>`로 요청합니다.
 
+```json
+{
+  "items": [
+    {
+      "recipientId": "u_000001",
+      "status": "SENT",
+      "attempts": 1,
+      "messageId": "m_5945",
+      "sentAt": "2026-10-15T20:34:52.215Z",
+      "lastErrorCode": null,
+      "lastErrorMessage": null,
+      "updatedAt": "2026-10-15T20:34:52.215Z"
+    }
+  ],
+  "nextCursor": "eyJwIjoidV8wMDAwMDEifQ"
+}
+```
+
+대량 알림(사용자 2000명)을 보내는 도중 취소하면 202와 CANCELING을 받습니다.
+
+```http
+HTTP/1.1 202 Accepted
+
+{
+  "id": "01a14146-62b1-7db9-b08c-138594538f03",
+  "type": "BULK",
+  "status": "CANCELING",
+  "finishedAt": null
+}
+```
+
+이미 나가던 건의 결과가 확정되면 CANCELED가 되고, 누가 실제로 받았는지 건수와 `/deliveries?status=SENT`로 확인할 수 있습니다.
+
+```json
+{
+  "id": "01a14146-62b1-7db9-b08c-138594538f03",
+  "status": "CANCELED",
+  "finishedAt": "2026-10-15T20:35:17.292Z",
+  "counts": {
+    "total": 2000,
+    "pending": 0,
+    "inFlight": 0,
+    "unconfirmed": 0,
+    "sent": 355,
+    "failed": 3,
+    "canceled": 1642
+  }
+}
+```
+
+수신 거부로 실패한 수신자:
+
 ```bash
-curl 'http://localhost:3000/v1/alarms/01a14099-e919-7581-ac7d-d88ac6d4b5fd/deliveries?status=FAILED&limit=2' \
+curl 'http://localhost:3000/v1/alarms/01a14146-62b1-7db9-b08c-138594538f03/deliveries?status=FAILED&limit=1' \
   -H 'Authorization: Bearer dev-api-key'
 ```
 
@@ -199,30 +267,10 @@ curl 'http://localhost:3000/v1/alarms/01a14099-e919-7581-ac7d-d88ac6d4b5fd/deliv
       "sentAt": null,
       "lastErrorCode": "RECIPIENT_BLOCKED",
       "lastErrorMessage": "recipient u_000089 has opted out",
-      "updatedAt": "2026-10-15T17:26:33.415Z"
-    },
-    { "recipientId": "u_000233", "status": "FAILED", "attempts": 2, "lastErrorCode": "RECIPIENT_BLOCKED", ... }
+      "updatedAt": "2026-10-15T20:34:56.435Z"
+    }
   ],
-  "nextCursor": "eyJwIjoidV8wMDAyMzMifQ"
-}
-```
-
-대량 알림(사용자 2000명)을 보내는 도중 취소하면 202와 CANCELING을 받습니다.
-
-```http
-HTTP/1.1 202 Accepted
-
-{ "id": "01a14099-e919-7581-ac7d-d88ac6d4b5fd", "type": "BULK", "status": "CANCELING", "finishedAt": null, ... }
-```
-
-이미 나가던 건의 결과가 확정되면 CANCELED가 되고, 누가 실제로 받았는지 건수와 `/deliveries?status=SENT`로 확인할 수 있습니다.
-
-```json
-{
-  "id": "01a14099-e919-7581-ac7d-d88ac6d4b5fd",
-  "status": "CANCELED",
-  "finishedAt": "2026-10-15T17:27:09.520Z",
-  "counts": { "total": 2000, "pending": 0, "inFlight": 0, "unconfirmed": 0, "sent": 1088, "failed": 10, "canceled": 902 }
+  "nextCursor": "eyJwIjoidV8wMDAwODkifQ"
 }
 ```
 
@@ -231,12 +279,12 @@ HTTP/1.1 202 Accepted
 ```json
 {
   "type": "/problems/invalid-state",
-  "title": "현재 상태에서 할 수 없는 요청",
+  "title": "Not allowed in the current state",
   "status": 409,
-  "detail": "COMPLETED 상태의 알림은 취소할 수 없다",
-  "instance": "/v1/alarms/01a14098-9680-71f2-8e7e-eac3f6de617e/cancel",
+  "detail": "An alarm in COMPLETED cannot be canceled",
+  "instance": "/v1/alarms/01a14146-58cc-726c-84e1-d6dbcbe9ff46/cancel",
   "currentStatus": "COMPLETED",
-  "traceId": "e0dfd0245108d27fd1f84fe01edb696b"
+  "traceId": "8b586a77afa5b4f6c9864b9dd9e718e9"
 }
 ```
 
@@ -245,12 +293,30 @@ HTTP/1.1 202 Accepted
 ```json
 {
   "type": "/problems/validation-failed",
-  "title": "요청 값이 올바르지 않다",
+  "title": "Invalid request",
   "status": 400,
-  "detail": "하나 이상의 필드가 규칙을 어겼다",
+  "detail": "One or more fields failed validation",
   "instance": "/v1/alarms",
-  "errors": [{ "field": "recipientIds", "message": "대량 알림에는 수신자를 지정할 수 없다" }],
-  "traceId": "bb8c2ba8014f22db45660d60e1fd1f24"
+  "errors": [
+    {
+      "field": "recipientIds",
+      "message": "Bulk alarms cannot have recipientIds"
+    }
+  ],
+  "traceId": "9ad86a13c7827350de51e9a3dd34233d"
+}
+```
+
+인증이 없거나 틀리면 401과 `WWW-Authenticate: Bearer`를 줍니다.
+
+```json
+{
+  "type": "/problems/unauthorized",
+  "title": "Authentication required",
+  "status": 401,
+  "detail": "The Authorization: Bearer <API key> header is missing or the key is wrong",
+  "instance": "/v1/alarms",
+  "traceId": "3f5ac2d4b96d93aa622454734707ac2f"
 }
 ```
 
@@ -303,7 +369,7 @@ api와 worker는 서로를 호출하지 않고 DB로만 이어집니다. 대량 
 - 워커의 생존은 DB가 판정합니다. 워커는 전용 DB 연결로 자기 ID의 advisory lock을 쥐고 있고, 살아 있는 워커 명단은 `pg_locks` 그 자체입니다. 프로세스가 죽으면 Postgres가 잠금을 풀고, 다른 워커가 그 워커의 건을 넘겨받아 위의 조회 경로로 처리합니다(ADR-0004).
 - 멈춘 워커(이벤트 루프 막힘, 긴 GC, `docker pause`)는 다른 워커가 처리합니다. 워커는 2초마다 생존 신호를 보내고, 15초 넘게 조용한 워커가 있으면 다른 워커가 그 워커의 DB 세션을 모두 `pg_terminate_backend`로 끊습니다. 깨어난 워커는 잠금을 잃은 것을 알아채거나 발송 직전 확인(잠금 연결이 최근 5초 안에 확인됐는가)에서 걸려 스스로 종료하고, 재시작하면 새 ID를 받습니다. 통합 테스트에서 실제 워커 프로세스를 `SIGSTOP`으로 멈췄다가 깨워 이 흐름을 확인합니다. 같은 이름으로 되살아나 이전 생의 건을 자기 것으로 착각하는 일이 없도록 컨테이너 이름은 ID로 쓰지 않습니다.
 - 발송 직전 확인은 요청 바이트를 소켓에 쓰기 바로 앞에서 합니다. 그보다 앞에서 확인하면, 소켓 배정이나 TCP 연결을 기다리는 사이에 멈췄다 깨어난 워커가 이미 넘겨받힌 건을 보낼 수 있습니다.
-- 남는 틈도 기록해 두었습니다. 확인을 통과한 뒤 요청 바이트가 커널로 넘어가기 전(같은 동기 실행 안의 아주 짧은 구간)에 멈추고, 그 상태로 20초 넘게 있다가 깨어나면 중복이 생길 수 있습니다. 이 경우 탐지는 보장되지 않습니다. 깨어난 워커가 응답을 받아 펜싱에 걸리면 조회로 중복을 확인해 `alarm_duplicates_detected_total`에 남기지만, 그 전에 잠금 상실을 알아채고 종료할 수 있기 때문입니다. 이 틈을 완전히 닫는 방법은 아래 "구현하지 않은 것"에 적었습니다.
+- 남는 틈도 기록해 두었습니다. 확인을 통과한 뒤 요청 바이트가 커널로 넘어가기 전(같은 동기 실행 안의 아주 짧은 구간)에 멈추고, 그 상태로 20초 넘게 있다가 깨어나면 중복이 생길 수 있습니다. 이 틈은 실제로 재현됩니다. 초당 100건을 보내는 워커를 아무 때나 멈추고 넘겨받기와 결과 확인 대기보다 오래 멈춰 두는 통합 테스트에서, 실행의 1~3%에 한 건씩 중복이 났습니다. 운영 값에서는 그 짧은 구간에 멈춘 채 20초를 넘겨야 합니다. 이 경우 탐지는 보장되지 않습니다. 깨어난 워커가 응답을 받아 펜싱에 걸리면 조회로 중복을 확인해 `alarm_duplicates_detected_total`에 남기지만, 그 전에 잠금 상실을 알아채고 종료할 수 있기 때문입니다. 이 틈을 완전히 닫는 방법은 아래 "구현하지 않은 것"에 적었습니다.
 
 ### 선택 구현
 
@@ -414,17 +480,18 @@ api와 worker는 서로를 호출하지 않고 DB로만 이어집니다. 대량 
 
 ## 고민한 것과 바꾼 결정
 
-- 처음 구현에서는 모든 쿼리를 `sql` 템플릿과 `execute`로 썼습니다. Drizzle을 고른 이유(빌더와 타입)를 살리지 못한 것이라, ADR-0036대로 빌더로 옮기고 SQL을 저장소 계층에 모았습니다. 서비스와 워커 루프에는 흐름만 남았습니다. 옮긴 뒤 같은 테스트 152개와 고의 결함 28개를 다시 돌려 동작이 같음을 확인했고, 그사이 Drizzle이 드라이버 오류를 `cause`로 감싸는 탓에 DB 장애가 503이 아니라 500으로 나가던 버그가 드러나 고쳤습니다.
+- 처음 구현에서는 모든 쿼리를 `sql` 템플릿과 `execute`로 썼습니다. Drizzle을 고른 이유(빌더와 타입)를 살리지 못한 것이라, ADR-0036대로 빌더로 옮기고 SQL을 저장소 계층에 모았습니다. 서비스와 워커 루프에는 흐름만 남았습니다. 옮긴 뒤 같은 테스트와 고의 결함 목록을 다시 돌려 동작이 같음을 확인했고, 그사이 Drizzle이 드라이버 오류를 `cause`로 감싸는 탓에 DB 장애가 503이 아니라 500으로 나가던 버그가 드러나 고쳤습니다.
 - 심사 기준을 "계획대로 만들었는가"에서 "명세를 낸 사람이 이 구현을 보고 납득하는가"로 바꿨습니다. 우리 ADR을 기준으로 삼으면 우리 계획을 다시 확인할 뿐이기 때문입니다. 새 기준의 심사에서 발송 시작과 취소가 동시에 오면 실제로 시작한 요청이 409를 받는 문제가 나와, 전이한 요청은 그 결과로 답하도록 고쳤습니다(ADR-0016).
 - 결과 확인 대기를 30초에서 5초로 줄였습니다. 처음에는 외부 서비스가 기록을 늦게 남길 수 있다고 보고 30초로 잡았습니다. mock을 실측해 보니 30초 지연 요청도 0.35초 시점에 이미 기록이 있었습니다. 남긴 5초는 끊기 직전에 보낸 요청이 도착하는 여유입니다.
 - 워커 장애 처리는 "확실히 죽었을 때만 넘겨받기"와 "건마다 만료 시각을 둔 리스"를 검토한 끝에 DB 세션 기반으로 정했습니다. 앞의 방식은 멈춘 워커의 건이 누가 죽여 줄 때까지 대기하고, 뒤의 방식은 만료된 워커가 자신이 무효가 된 것을 알 길이 없습니다.
 - 처리량을 재다가 DB 연결 풀을 둘로 나눴습니다(초당 46.9건에서 49.1건). 설계 단계에서는 보지 못한 문제였고, 측정으로 드러났습니다.
 - "보냈는지 모르는" 오류의 기준을 하나로 줄였습니다. 처음에는 연결 오류 코드 목록(ECONNREFUSED 등)도 함께 봤는데, 변이 테스팅에서 그 조건을 지워도 결과가 같다는 것이 드러났습니다. 지금은 "요청 바이트를 커널에 다 넘겼는가" 하나만 봅니다.
 - 고의 결함 목록의 첫 실행에서 꺼내기 정렬의 우선순위를 지운 결함을 테스트가 놓쳤습니다. 10건을 한 번에 꺼낸 뒤 순서를 봤는데, 코드가 반환 전에 다시 정렬해 SQL 결함을 가렸습니다. 우선순위의 의미는 "토큰 수만큼 꺼낼 때 무엇을 고르는가"이므로, 한 건씩 꺼내 고른 순서를 보도록 테스트를 고쳤습니다.
-- 멈춘 워커 테스트를 실제 프로세스로 바꾸면서 세 가지를 고쳤습니다. 처음 테스트는 워커처럼 잠금만 쥔 가짜 세션을 썼습니다. 컴파일된 워커를 발송 도중 `SIGSTOP`으로 멈추고, 다른 워커가 넘겨받아 끝낸 뒤 `SIGCONT`로 깨우는 테스트를 더해 수십 번 반복했더니 아래 문제가 나왔습니다. 셋 다 재현 테스트와 고의 결함 항목(S17~S19)을 함께 남겼습니다.
+- 멈춘 워커 테스트를 실제 프로세스로 바꾸면서 네 가지를 고쳤습니다. 처음 테스트는 워커처럼 잠금만 쥔 가짜 세션을 썼습니다. 컴파일된 워커를 발송 도중 `SIGSTOP`으로 멈추고, 다른 워커가 넘겨받아 끝낸 뒤 `SIGCONT`로 깨우는 테스트를 더해 수십 번 반복했더니 아래 문제가 나왔습니다. 모두 재현 테스트와 고의 결함 항목(S17~S19, S29)을 함께 남겼습니다.
   - 반복 실행 중 한 번, 한 수신자에게 기록이 두 건 남았습니다. 발송 직전 확인이 HTTP 요청을 만들기 전에만 있어서, 소켓 연결을 기다리던 요청이 깨어난 뒤 그대로 나간 것으로 판단했습니다. 확인을 소켓에 쓰기 직전으로 옮겼습니다.
   - 트랜잭션 도중이던 DB 연결이 끊기자 처리되지 않은 `'error'` 이벤트로 프로세스가 죽었습니다. 풀은 쉬고 있는 연결의 오류만 받아 주기 때문입니다. 같은 일은 DB 재시작 때 api에서도 생길 수 있어서, 모든 연결에 오류 리스너를 달았습니다.
   - 워커가 알림 행 잠금을 쥔 채 멈추면 다른 워커의 발송이 통째로 멈췄습니다. 결과 기록 트랜잭션들이 그 잠금을 기다리며 연결 풀 10개를 모두 붙잡아, 잠금을 풀어 줄 무효 선언이 연결을 얻지 못했습니다. 무효 선언과 넘겨받기에 전용 연결을 주었습니다.
+  - 리팩토링 뒤 같은 테스트를 40번 돌리다 37번째에 다시 중복이 한 건 나왔습니다. 생존 신호를 보낸 직후 멈추면 그 응답은 깨어난 뒤에야 처리되는데, 처리한 시각을 "확인된 시각"으로 써서 이미 무효가 된 워커가 잠깐 발송할 수 있었습니다. 확인 시각을 신호를 보낸 시각으로 바꿨습니다(S29). 리팩토링 전부터 있던 문제였고, 반복 실행이 아니면 찾기 어려운 종류였습니다.
 - 취소 정리가 끝난 뒤 재시도 건이 PENDING으로 돌아오면 그 건이 영원히 남는다는 것을 구현 중에 발견했습니다. 건을 대기로 되돌리는 모든 경로가 알림 행을 잠그고 상태를 확인해, 알림이 SENDING이 아니면 CANCELED로 두도록 했습니다(ADR-0017).
 
 ## 구현하지 않은 것 (설계만)
