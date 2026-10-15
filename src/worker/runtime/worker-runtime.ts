@@ -29,6 +29,7 @@ export class WorkerRuntime {
   readonly metrics = new WorkerMetrics();
   readonly workerId: number;
   private readonly pool: Pool;
+  private readonly loopPool: Pool;
   private readonly db: Db;
   private readonly client: ExternalApiClient;
   private readonly session: WorkerSession;
@@ -45,6 +46,11 @@ export class WorkerRuntime {
       logger.warn('쉬던 DB 연결이 끊겼다', { error: error.message }),
     );
     this.db = createDb(this.pool);
+    // 토큰 받기와 꺼내기 전용. 결과 기록 트랜잭션과 연결을 다투지 않게 따로 둔다.
+    this.loopPool = createPool(config.DATABASE_URL!, workerApplicationName(workerId, 'pool'), 2, (error) =>
+      logger.warn('쉬던 DB 연결이 끊겼다', { error: error.message }),
+    );
+    const loopDb = createDb(this.loopPool);
     this.client = new ExternalApiClient(config.EXTERNAL_API_BASE_URL, config.MAX_IN_FLIGHT);
     this.session = new WorkerSession(
       {
@@ -56,8 +62,8 @@ export class WorkerRuntime {
       logger,
       (reason) => onFatal(`잠금을 잃었다: ${reason}`),
     );
-    const store = new DeliveryStore(this.db, workerId);
-    const bucket = new TokenBucket(this.db, config.RATE_LIMIT_PER_SEC, config.RATE_BUCKET_CAPACITY);
+    const store = new DeliveryStore(this.db, workerId, loopDb);
+    const bucket = new TokenBucket(loopDb, config.RATE_LIMIT_PER_SEC, config.RATE_BUCKET_CAPACITY);
     const breaker = new SendBreaker(
       config.BREAKER_WINDOW,
       config.BREAKER_FAILURE_RATIO,
@@ -110,6 +116,7 @@ export class WorkerRuntime {
     await this.session.stop();
     this.client.close();
     await this.pool.end();
+    await this.loopPool.end();
     this.options.logger.log('정상 종료 완료');
   }
 }

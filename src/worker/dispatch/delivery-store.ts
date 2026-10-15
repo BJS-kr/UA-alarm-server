@@ -30,9 +30,14 @@ export type WriteOutcome = { applied: true; finished: AlarmStatus | null } | { a
  * IN_FLIGHT에서 나가는 쓰기에는 owner와 시도 번호 조건(펜싱)을 건다 (ADR-0004).
  */
 export class DeliveryStore {
+  /**
+   * claimDb는 작업 루프 전용 연결이다. 결과 기록은 알림 행 잠금을 차례로 기다리므로, 같은 풀을 쓰면
+   * 그 트랜잭션들이 연결을 붙잡는 동안 루프가 꺼내지 못하고 토큰이 넘쳐 버려진다.
+   */
   constructor(
     private readonly db: Db,
     private readonly workerId: number,
+    private readonly claimDb: Db = db,
   ) {}
 
   /**
@@ -41,7 +46,7 @@ export class DeliveryStore {
    * SENDING 알림의 건만 집으므로 취소 1단계가 커밋된 순간부터 그 알림의 건은 꺼내지지 않는다.
    */
   async claim(limit: number): Promise<ClaimedDelivery[]> {
-    const result = await this.db.execute<{
+    const result = await this.claimDb.execute<{
       id: number;
       alarm_id: string;
       recipient_id: string;
