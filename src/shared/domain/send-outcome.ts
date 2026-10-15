@@ -3,6 +3,7 @@ import { BackoffOptions, retryDelayMs } from './retry-policy';
 /**
  * 외부 발송 요청 한 번의 결과. "보냈는지 모르는" 경우를 따로 구분한다 (ADR-0002, 0037).
  * - not_sent: 연결 단계에서 실패해 요청이 나가지 않았다.
+ * - withheld: 쓰기 직전 확인에 걸려 우리가 보내지 않았다. 외부 서비스와는 관계없다 (ADR-0004).
  * - unknown: 요청을 쓴 뒤에 실패했다(타임아웃, 응답 도중 끊김, 게이트웨이 오류).
  */
 export type SendResult =
@@ -11,6 +12,7 @@ export type SendResult =
   | { kind: 'rate_limited'; retryAfterSec: number }
   | { kind: 'server_error'; status: number; code: string; message: string }
   | { kind: 'not_sent'; code: string; message: string }
+  | { kind: 'withheld' }
   | { kind: 'unknown'; code: string; message: string };
 
 /** 발송 결과를 받은 IN_FLIGHT Delivery가 갈 곳 (ADR-0014, 0032). */
@@ -43,6 +45,13 @@ export function decideAfterSend(
         kind: 'requeue_uncounted',
         code: 'RATE_LIMITED',
         message: `retry-after ${result.retryAfterSec}s`,
+      };
+    case 'withheld':
+      // 나가지 않았고 그 건의 문제도 아니다. 워커는 이 결과를 꺼낼 때 확인에 걸린 건처럼 반납한다.
+      return {
+        kind: 'requeue_uncounted',
+        code: 'SEND_GUARD',
+        message: 'Not sent because the pre-write check failed',
       };
     case 'server_error':
     case 'not_sent': {

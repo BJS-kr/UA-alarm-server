@@ -5,6 +5,9 @@ import {
   SendResult,
 } from '../domain/send-outcome';
 
+/** 쓰기 직전 확인에 걸려 요청을 끊을 때 붙이는 오류 코드. 연결 오류와 구별하는 데 쓴다. */
+const SEND_GUARD_CODE = 'SEND_GUARD';
+
 type RawOutcome =
   | {
       kind: 'response';
@@ -47,7 +50,7 @@ export class ExternalApiClient {
   }
 
   /**
-   * canWrite는 요청 바이트를 소켓에 쓰기 직전에 부른다. false면 보내지 않고 not_sent로 끝낸다.
+   * canWrite는 요청 바이트를 소켓에 쓰기 직전에 부른다. false면 보내지 않고 withheld로 끝낸다.
    * 워커는 여기에 발송 직전 확인을 넘긴다 (ADR-0004).
    */
   async sendMessage(
@@ -65,6 +68,9 @@ export class ExternalApiClient {
     );
     const isTransportError = outcome.kind === 'error';
     if (isTransportError) {
+      const isWithheld = outcome.code === SEND_GUARD_CODE;
+      if (isWithheld) return { kind: 'withheld' };
+
       // 요청 바이트를 커널에 다 넘기기 전에 실패했으면(연결 거부, 연결 단계 시간 초과 등) 서버는 완전한 요청을
       // 받지 못했으므로 처리할 수 없다. 다 넘긴 뒤의 실패는 보냈는지 모른다 (ADR-0037).
       return outcome.flushed
@@ -261,7 +267,7 @@ export class ExternalApiClient {
           req.destroy(
             Object.assign(
               new Error('Not sent because the pre-write check failed'),
-              { code: 'SEND_GUARD' },
+              { code: SEND_GUARD_CODE },
             ),
           );
 

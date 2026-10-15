@@ -72,6 +72,15 @@ describe('발송 결과 → Delivery 처리 (ADR-0014, 0032)', () => {
     });
   });
 
+  it('쓰기 직전 확인에 걸려 보내지 않은 건은 시도 횟수에 세지 않고 대기열로 돌린다', () => {
+    expect(decideAfterSend({ kind: 'withheld' }, 3, options)).toEqual({
+      kind: 'requeue_uncounted',
+      code: 'SEND_GUARD',
+      message: 'Not sent because the pre-write check failed',
+    });
+    expect(isBreakerFailure({ kind: 'withheld' })).toBe(false);
+  });
+
   it('요청이 나가지 못한 연결 오류도 재시도한다', () => {
     expect(
       decideAfterSend(

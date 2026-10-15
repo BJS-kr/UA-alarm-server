@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { sql } from 'drizzle-orm';
 import { Client } from 'pg';
 import { createDb, createPool } from '../../src/shared/db/database';
+import { SendResult } from '../../src/shared/domain/send-outcome';
 import { clientRefOf } from '../../src/shared/domain/status';
 import { ExternalApiClient } from '../../src/shared/external/external-api.client';
 import { SendBreaker } from '../../src/worker/breaker/send-breaker';
@@ -434,7 +435,7 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
     expect(session.canSend()).toBe(false);
   });
 
-  it('꺼낼 때 확인을 통과했어도, 소켓에 쓰기 직전 확인이 실패하면 보내지 않고 대기로 돌린다', async () => {
+  it('꺼낼 때 확인을 통과했어도, 소켓에 쓰기 직전 확인이 실패하면 보내지 않고 시도 횟수와 브레이커에 세지 않은 채 대기로 돌린다', async () => {
     const workerId = 4747;
     const alarm = await insertAlarm(database.db, {
       type: 'URGENT',
@@ -442,6 +443,7 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
     });
     let allowed = true;
     let requested = false;
+    const recorded: SendResult[] = [];
 
     // 요청을 만든 직후(소켓에 쓰기 전)부터 확인이 실패한다. 연결을 기다리는 사이에 멈췄다 깨어난 경우와 같다.
     class FlippingClient extends ExternalApiClient {
@@ -467,7 +469,11 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
       bucket: new TokenBucket(db, 1000, 50),
       client,
       session: { canSend: () => allowed } as unknown as WorkerSession,
-      breaker: { record: async () => undefined } as unknown as SendBreaker,
+      breaker: {
+        record: async (result: SendResult) => {
+          recorded.push(result);
+        },
+      } as unknown as SendBreaker,
       metrics: new WorkerMetrics(),
       logger: new CapturingLogger(),
       onFatal: (reason) => {
@@ -489,5 +495,12 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
       5_000,
     );
     expect(fake.received).toHaveLength(0);
+    // 외부 장애가 아니므로 브레이커가 보지 않고, 이 건의 시도 횟수도 쓰지 않는다.
+    expect(recorded).toEqual([]);
+    const row = await database.db.execute<{ attempts: number }>(
+      sql`SELECT attempts FROM deliveries WHERE alarm_id = ${alarm.id}`,
+    );
+
+    expect(row.rows[0].attempts).toBe(0);
   });
 });

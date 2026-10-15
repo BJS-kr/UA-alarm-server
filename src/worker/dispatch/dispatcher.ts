@@ -166,6 +166,15 @@ export class Dispatcher {
       (monotonicMs() - startedAt) / 1000,
     );
 
+    // 쓰기 직전 확인에 걸려 나가지 않았다. 꺼낼 때 확인에 걸린 건과 같이 반납한다.
+    // 외부 장애가 아니므로 서킷 브레이커에 세지 않고, 시도 횟수도 되돌린다 (ADR-0004, 0014).
+    const isWithheld = result.kind === 'withheld';
+    if (isWithheld) {
+      await this.persist(() => deliveries.releaseUnsent(delivery));
+
+      return;
+    }
+
     const isRateLimited = result.kind === 'rate_limited';
     if (isRateLimited) {
       metrics.rateLimitPauses.inc();

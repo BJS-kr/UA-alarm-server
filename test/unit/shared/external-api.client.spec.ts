@@ -513,11 +513,8 @@ describe('외부 발송 API 응답 분류', () => {
 });
 
 describe('쓰기 직전 확인 (ADR-0004)', () => {
-  const notSent = {
-    kind: 'not_sent',
-    code: 'SEND_GUARD',
-    message: 'Not sent because the pre-write check failed',
-  };
+  // 연결 오류(not_sent)와 구별한다. 워커는 이 결과를 외부 장애로 세지 않는다.
+  const withheld = { kind: 'withheld' };
 
   async function withServer(
     run: (client: ExternalApiClient, requests: () => number) => Promise<void>,
@@ -540,13 +537,13 @@ describe('쓰기 직전 확인 (ADR-0004)', () => {
   it('확인에 실패하면 새 연결에도, 재사용하는 연결에도 쓰지 않는다', () =>
     withServer(async (client, requests) => {
       expect(await client.sendMessage(input, 1000, () => false)).toMatchObject(
-        notSent,
+        withheld,
       );
       expect(await client.sendMessage(input, 1000, () => true)).toMatchObject({
         kind: 'accepted',
       });
       expect(await client.sendMessage(input, 1000, () => false)).toMatchObject(
-        notSent,
+        withheld,
       );
       expect(requests()).toBe(1);
     }));
@@ -558,7 +555,7 @@ describe('쓰기 직전 확인 (ADR-0004)', () => {
       const pending = client.sendMessage(input, 1000, () => allowed);
 
       process.nextTick(() => (allowed = false));
-      expect(await pending).toMatchObject(notSent);
+      expect(await pending).toMatchObject(withheld);
       expect(requests()).toBe(0);
     }));
 });
