@@ -15,7 +15,7 @@ async function bootstrap(): Promise<void> {
   logger.log('설정 적용', describeConfig(config));
 
   const pool = createPool(config.DATABASE_URL!, 'alarm-api', 10, (error) =>
-    logger.warn('쉬던 DB 연결이 끊겼다', { error: error.message }),
+    logger.warn('DB 연결이 끊겼다', { error: error.message }),
   );
   await waitForDatabase(pool, logger);
 

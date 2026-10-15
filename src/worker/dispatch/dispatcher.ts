@@ -120,6 +120,7 @@ export class Dispatcher {
         clientRef: clientRefOf(delivery.alarmId, delivery.recipientId),
       },
       config.SEND_TIMEOUT_MS,
+      () => this.deps.session.canSend(),
     );
     const priority = String(delivery.priority);
     metrics.sendRequests.inc({ priority, result: result.kind });

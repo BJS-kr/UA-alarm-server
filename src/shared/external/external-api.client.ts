@@ -35,8 +35,12 @@ export class ExternalApiClient {
     this.agent = new http.Agent({ keepAlive: true, maxSockets });
   }
 
-  async sendMessage(input: SendMessageInput, timeoutMs: number): Promise<SendResult> {
-    const outcome = await this.request('POST', '/v1/messages', input, timeoutMs);
+  /**
+   * canWrite는 요청 바이트를 소켓에 쓰기 직전에 부른다. false면 보내지 않고 not_sent로 끝낸다.
+   * 워커는 여기에 발송 직전 확인을 넘긴다 (ADR-0004).
+   */
+  async sendMessage(input: SendMessageInput, timeoutMs: number, canWrite?: () => boolean): Promise<SendResult> {
+    const outcome = await this.request('POST', '/v1/messages', input, timeoutMs, canWrite);
     if (outcome.kind === 'error') {
       // 요청 바이트를 커널에 다 넘기기 전에 실패했으면(연결 거부, 연결 단계 시간 초과 등) 서버는 완전한 요청을
       // 받지 못했으므로 처리할 수 없다. 다 넘긴 뒤의 실패는 보냈는지 모른다 (ADR-0037).
@@ -86,7 +90,7 @@ export class ExternalApiClient {
     this.agent.destroy();
   }
 
-  private request(method: string, path: string, body: unknown, timeoutMs: number): Promise<RawOutcome> {
+  private request(method: string, path: string, body: unknown, timeoutMs: number, canWrite?: () => boolean): Promise<RawOutcome> {
     return new Promise((resolve) => {
       let flushed = false;
       let settled = false;
@@ -122,10 +126,19 @@ export class ExternalApiClient {
       req.on('error', (err: NodeJS.ErrnoException) =>
         finish({ kind: 'error', flushed, code: err.code ?? 'REQUEST_ERROR', message: err.message }),
       );
-      // 'finish'는 요청 바이트가 소켓에 넘어간 뒤에 온다. 이후의 실패는 "보냈는지 모르는" 실패다.
-      req.end(payload, () => {
-        flushed = true;
-      });
+      const send = () => {
+        if (canWrite && !canWrite()) {
+          req.destroy(Object.assign(new Error('쓰기 직전 확인에 실패해 보내지 않았다'), { code: 'SEND_GUARD' }));
+          return;
+        }
+        // 'finish'는 요청 바이트가 소켓에 넘어간 뒤에 온다. 이후의 실패는 "보냈는지 모르는" 실패다.
+        req.end(payload, () => {
+          flushed = true;
+        });
+      };
+      // 소켓을 배정받고 연결된 뒤에 쓴다. 호출과 쓰기 사이의 비동기 틈(소켓 배정, 연결)에서 멈췄다 깨어난 워커가
+      // 그 사이 넘겨받힌 건을 보내지 않도록, 확인을 쓰기 바로 앞에 둔다 (ADR-0004).
+      req.once('socket', (socket) => (socket.connecting ? socket.once('connect', send) : send()));
     });
   }
 }

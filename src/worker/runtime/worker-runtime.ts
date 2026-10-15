@@ -30,6 +30,7 @@ export class WorkerRuntime {
   readonly workerId: number;
   private readonly pool: Pool;
   private readonly loopPool: Pool;
+  private readonly housekeepingPool: Pool;
   private readonly db: Db;
   private readonly client: ExternalApiClient;
   private readonly session: WorkerSession;
@@ -42,15 +43,16 @@ export class WorkerRuntime {
   constructor(private readonly options: WorkerRuntimeOptions) {
     const { config, workerId, logger, onFatal } = options;
     this.workerId = workerId;
-    this.pool = createPool(config.DATABASE_URL!, workerApplicationName(workerId, 'pool'), 10, (error) =>
-      logger.warn('쉬던 DB 연결이 끊겼다', { error: error.message }),
-    );
+    const onDbError = (error: Error) => logger.warn('DB 연결이 끊겼다', { error: error.message });
+    this.pool = createPool(config.DATABASE_URL!, workerApplicationName(workerId, 'pool'), 10, onDbError);
     this.db = createDb(this.pool);
     // 토큰 받기와 꺼내기 전용. 결과 기록 트랜잭션과 연결을 다투지 않게 따로 둔다.
-    this.loopPool = createPool(config.DATABASE_URL!, workerApplicationName(workerId, 'pool'), 2, (error) =>
-      logger.warn('쉬던 DB 연결이 끊겼다', { error: error.message }),
-    );
+    this.loopPool = createPool(config.DATABASE_URL!, workerApplicationName(workerId, 'pool'), 2, onDbError);
     const loopDb = createDb(this.loopPool);
+    // 무효 선언과 넘겨받기 전용. 다른 워커가 알림 행 잠금을 쥔 채 멈추면, 결과 기록 트랜잭션들이 그 잠금을 기다리며
+    // 기본 풀을 모두 붙잡는다. 그 잠금을 푸는 것이 무효 선언이므로, 무효 선언은 연결을 따로 가져야 한다 (ADR-0004).
+    this.housekeepingPool = createPool(config.DATABASE_URL!, workerApplicationName(workerId, 'pool'), 1, onDbError);
+    const housekeepingDb = createDb(this.housekeepingPool);
     this.client = new ExternalApiClient(config.EXTERNAL_API_BASE_URL, config.MAX_IN_FLIGHT);
     this.session = new WorkerSession(
       {
@@ -86,7 +88,14 @@ export class WorkerRuntime {
     this.reconciler = new Reconciler(config, store, this.client, this.metrics, logger, onFatal);
     this.expander = new Expander(config, this.db, workerId, this.client, this.metrics, logger, onFatal);
     this.canceller = new Canceller(config, this.db, workerId, logger, onFatal);
-    this.housekeeper = new Housekeeper(config, this.db, store, workerId, this.metrics, logger);
+    this.housekeeper = new Housekeeper(
+      config,
+      housekeepingDb,
+      new DeliveryStore(housekeepingDb, workerId, housekeepingDb),
+      workerId,
+      this.metrics,
+      logger,
+    );
   }
 
   async start(): Promise<void> {
@@ -117,6 +126,7 @@ export class WorkerRuntime {
     this.client.close();
     await this.pool.end();
     await this.loopPool.end();
+    await this.housekeepingPool.end();
     this.options.logger.log('정상 종료 완료');
   }
 }

@@ -104,6 +104,8 @@ describe('토큰 버킷 (ADR-0009)', () => {
 
   it('정지 중에는 토큰을 주지 않고 남은 시간을 알려 준다 (429)', async () => {
     const bucket = new TokenBucket(database.db, 50, 10);
+    // 통이 차 있어야 0개가 "정지라서"인지 "토큰이 없어서"인지 구별된다.
+    await new Promise((r) => setTimeout(r, 300));
     await bucket.pauseFor(1000);
     const grant = await bucket.acquire(5);
     expect(grant.granted).toBe(0);

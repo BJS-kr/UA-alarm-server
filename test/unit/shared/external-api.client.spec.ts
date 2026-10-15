@@ -315,3 +315,40 @@ describe('외부 발송 API 응답 분류', () => {
     }
   });
 });
+
+describe('쓰기 직전 확인 (ADR-0004)', () => {
+  const notSent = { kind: 'not_sent', code: 'SEND_GUARD', message: '쓰기 직전 확인에 실패해 보내지 않았다' };
+
+  async function withServer(run: (client: ExternalApiClient, requests: () => number) => Promise<void>): Promise<void> {
+    let requests = 0;
+    const server = await serve((_req, res) => {
+      requests += 1;
+      res.writeHead(202).end('{"messageId":"m"}');
+    });
+    const client = new ExternalApiClient(server.url, 5);
+    try {
+      await run(client, () => requests);
+    } finally {
+      client.close();
+      await server.close();
+    }
+  }
+
+  it('확인에 실패하면 새 연결에도, 재사용하는 연결에도 쓰지 않는다', () =>
+    withServer(async (client, requests) => {
+      expect(await client.sendMessage(input, 1000, () => false)).toMatchObject(notSent);
+      expect(await client.sendMessage(input, 1000, () => true)).toMatchObject({ kind: 'accepted' });
+      expect(await client.sendMessage(input, 1000, () => false)).toMatchObject(notSent);
+      expect(requests()).toBe(1);
+    }));
+
+  it('호출할 때가 아니라 연결된 뒤 쓰기 직전에 확인한다', () =>
+    withServer(async (client, requests) => {
+      // 소켓 배정(nextTick)까지는 허용하고, 연결이 끝나기 전에 막는다. 연결된 뒤에 확인해야 막힌다.
+      let allowed = true;
+      const pending = client.sendMessage(input, 1000, () => allowed);
+      process.nextTick(() => (allowed = false));
+      expect(await pending).toMatchObject(notSent);
+      expect(requests()).toBe(0);
+    }));
+});
