@@ -91,6 +91,7 @@ export const deliveries = pgTable(
     startSeq: bigint('start_seq', { mode: 'number' }).notNull(),
     status: text('status').$type<DeliveryStatus>().notNull().default('PENDING'),
     attempts: integer('attempts').notNull().default(0),
+    lookupFailures: integer('lookup_failures').notNull().default(0),
     nextAttemptAt: timestamp('next_attempt_at', tz).notNull().defaultNow(),
     reconcileAfter: timestamp('reconcile_after', tz),
     owner: bigint('owner', { mode: 'number' }),

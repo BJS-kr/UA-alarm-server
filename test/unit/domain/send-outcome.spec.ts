@@ -151,9 +151,15 @@ describe('결과 확인 → Delivery 처리 (ADR-0002, 0017)', () => {
     ],
   };
   const empty = { kind: 'ok' as const, messages: [] };
+  const progress = (attempts: number, lookupFailures = 0) => ({
+    attempts,
+    lookupFailures,
+  });
 
   it('기록이 있으면 다시 보내지 않고 발송 완료로 확정한다', () => {
-    expect(decideAfterLookup(found, false, 2, options, noJitter)).toEqual({
+    expect(
+      decideAfterLookup(found, false, progress(2), options, noJitter),
+    ).toEqual({
       kind: 'sent',
       messageId: 'm_1',
       sentAt: '2026-10-15T00:00:00Z',
@@ -170,38 +176,59 @@ describe('결과 확인 → Delivery 처리 (ADR-0002, 0017)', () => {
       ],
     };
 
-    expect(decideAfterLookup(twice, false, 2, options, noJitter)).toMatchObject(
-      { kind: 'sent', duplicate: true },
-    );
+    expect(
+      decideAfterLookup(twice, false, progress(2), options, noJitter),
+    ).toMatchObject({ kind: 'sent', duplicate: true });
   });
 
   it('기록이 없음이 확인되면 다시 보낸다', () => {
-    expect(decideAfterLookup(empty, false, 2, options, noJitter)).toEqual({
+    expect(
+      decideAfterLookup(empty, false, progress(2), options, noJitter),
+    ).toEqual({
       kind: 'resend',
     });
   });
 
   it('기록이 없는데 알림이 취소 중이면 다시 보내지 않고 취소한다', () => {
-    expect(decideAfterLookup(empty, true, 2, options, noJitter)).toEqual({
+    expect(
+      decideAfterLookup(empty, true, progress(2), options, noJitter),
+    ).toEqual({
       kind: 'canceled',
     });
   });
 
   it('기록이 없는데 시도를 다 썼으면 실패로 확정한다', () => {
-    expect(decideAfterLookup(empty, false, 8, options, noJitter)).toMatchObject(
-      { kind: 'failed', code: 'NOT_DELIVERED' },
-    );
+    expect(
+      decideAfterLookup(empty, false, progress(8), options, noJitter),
+    ).toMatchObject({ kind: 'failed', code: 'NOT_DELIVERED' });
   });
 
   it('조회 자체가 실패하면 다시 보내지 않고 조회만 다시 한다', () => {
     const decision = decideAfterLookup(
       { kind: 'error', code: 'HTTP_500', message: 'x' },
       false,
-      8,
+      progress(8),
       options,
       noJitter,
     );
 
     expect(decision).toEqual({ kind: 'retry_lookup', delayMs: 1000 });
+  });
+
+  it('조회가 연달아 실패하면 발송 재시도와 같이 간격을 두 배씩 늘리고 최대에서 멈춘다 (ADR-0014)', () => {
+    const failed = { kind: 'error' as const, code: 'HTTP_500', message: 'x' };
+    const delayAfter = (lookupFailures: number) =>
+      (
+        decideAfterLookup(
+          failed,
+          false,
+          progress(1, lookupFailures),
+          options,
+          noJitter,
+        ) as { delayMs: number }
+      ).delayMs;
+
+    expect([0, 1, 2, 3].map(delayAfter)).toEqual([1000, 2000, 4000, 8000]);
+    expect(delayAfter(20)).toBe(options.maxMs);
   });
 });

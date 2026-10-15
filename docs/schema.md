@@ -47,6 +47,7 @@
 | `start_seq` | `bigint` NOT NULL | 알림 시작 순번의 복사본(ADR-0012) |
 | `status` | `text` NOT NULL, 기본 `PENDING` | `PENDING` · `IN_FLIGHT` · `UNCONFIRMED` · `SENT` · `FAILED` · `CANCELED` (ADR-0032) |
 | `attempts` | `integer` NOT NULL, 기본 0 | 발송 시도 횟수. 펜싱 조건에도 쓴다(ADR-0004, 0014) |
+| `lookup_failures` | `integer` NOT NULL, 기본 0 | 이번 결과 미확정 동안 연달아 실패한 조회 수. 조회 재시도 간격을 정하고, 결과 미확정이 될 때마다 0으로 되돌린다(ADR-0014) |
 | `next_attempt_at` | `timestamptz` NOT NULL, 기본 `now()` | PENDING일 때 꺼낼 수 있는 시각(ADR-0014) |
 | `reconcile_after` | `timestamptz` NULL | UNCONFIRMED일 때 조회할 수 있는 시각(ADR-0002) |
 | `owner` | `bigint` NULL | 쥐고 있는 워커 ID(ADR-0004) |

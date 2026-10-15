@@ -1,5 +1,9 @@
 import { sql } from 'drizzle-orm';
 import { AppConfig } from '../../src/shared/config/app-config';
+import {
+  decideAfterLookup,
+  LookupResult,
+} from '../../src/shared/domain/send-outcome';
 import { Canceller } from '../../src/worker/cancellation/canceller';
 import { CancellationRepository } from '../../src/worker/cancellation/cancellation.repository';
 import { WorkerMetrics } from '../../src/worker/metrics/worker-metrics';
@@ -101,6 +105,68 @@ describe('완료 판정: 마지막 기록이 같은 트랜잭션에서 판정한
     );
 
     expect(row.rows[0]).toEqual({ status: 'PENDING', attempts: 0 });
+  });
+
+  it('조회가 연달아 실패하면 간격을 늘리고, 다시 결과 미확정이 되면 처음부터 센다 (ADR-0014)', async () => {
+    await insertAlarm(database.db, { type: 'URGENT', recipients: ['u_1'] });
+    const store = new DeliveryRepository(database.db, 1);
+    const options = {
+      baseMs: 1000,
+      maxMs: 60_000,
+      jitterRatio: 0,
+      maxAttempts: 8,
+    };
+    const lookupFailed = {
+      kind: 'error' as const,
+      code: 'HTTP_500',
+      message: 'x',
+    };
+    const lookupFailures = async (id: number) =>
+      (
+        await database.db.execute<{ n: number }>(
+          sql`SELECT lookup_failures AS n FROM deliveries WHERE id = ${id}`,
+        )
+      ).rows[0].n;
+    const reconcileNow = async (lookup: LookupResult) => {
+      await database.db.execute(
+        sql`UPDATE deliveries SET reconcile_after = clock_timestamp()`,
+      );
+      const [item] = await store.claimReconcile(10, 1000);
+      const { decision } = await store.recordReconcile(item, (canceling) =>
+        decideAfterLookup(lookup, canceling, item, options),
+      );
+
+      return decision;
+    };
+    const [first] = await store.claim(1);
+
+    await store.recordSend(
+      first,
+      { kind: 'unconfirmed', code: 'TIMEOUT', message: 'x' },
+      0,
+    );
+    expect(await reconcileNow(lookupFailed)).toEqual({
+      kind: 'retry_lookup',
+      delayMs: 1000,
+    });
+    expect(await reconcileNow(lookupFailed)).toEqual({
+      kind: 'retry_lookup',
+      delayMs: 2000,
+    });
+    expect(await lookupFailures(first.id)).toBe(2);
+
+    // 기록 없음이 확인되어 다시 보냈고, 그 시도도 결과 미확정이 됐다.
+    expect(await reconcileNow({ kind: 'ok', messages: [] })).toEqual({
+      kind: 'resend',
+    });
+    const [second] = await store.claim(1);
+
+    await store.recordSend(
+      second,
+      { kind: 'unconfirmed', code: 'TIMEOUT', message: 'x' },
+      0,
+    );
+    expect(await lookupFailures(second.id)).toBe(0);
   });
 });
 

@@ -1,0 +1,1 @@
+ALTER TABLE "deliveries" ADD COLUMN "lookup_failures" integer DEFAULT 0 NOT NULL;

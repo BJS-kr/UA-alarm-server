@@ -292,7 +292,7 @@ describe('도메인 결과의 세부 값', () => {
     const lookup = decideAfterLookup(
       { kind: 'ok', messages: [] },
       false,
-      8,
+      { attempts: 8, lookupFailures: 0 },
       options,
     );
 

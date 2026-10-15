@@ -98,17 +98,26 @@ export type ReconcileDecision =
   | { kind: 'resend' }
   | { kind: 'retry_lookup'; delayMs: number };
 
+/** 결과 확인 대상 Delivery의 진행 상황. lookupFailures는 이번 결과 미확정 동안 연달아 실패한 조회 수다. */
+export interface LookupProgress {
+  attempts: number;
+  lookupFailures: number;
+}
+
 export function decideAfterLookup(
   lookup: LookupResult,
   isAlarmCanceling: boolean,
-  attempts: number,
+  { attempts, lookupFailures }: LookupProgress,
   options: RetryOptions,
   random: () => number = Math.random,
 ): ReconcileDecision {
   const isLookupFailed = lookup.kind === 'error';
   if (isLookupFailed) {
-    // 조회가 실패하면 다시 보내지 않고 조회만 다시 한다. 발송 시도 횟수에는 세지 않는다.
-    return { kind: 'retry_lookup', delayMs: retryDelayMs(1, options, random) };
+    // 조회가 실패하면 다시 보내지 않고 조회만 다시 한다. 발송 시도 횟수에는 세지 않고, 간격은 발송 재시도와 같이 늘린다 (ADR-0014).
+    return {
+      kind: 'retry_lookup',
+      delayMs: retryDelayMs(lookupFailures + 1, options, random),
+    };
   }
 
   const isRecorded = lookup.messages.length > 0;

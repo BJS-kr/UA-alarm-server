@@ -27,6 +27,7 @@ export interface ReconcileItem {
   alarmId: string;
   recipientId: string;
   attempts: number;
+  lookupFailures: number;
 }
 
 export type WriteOutcome =
@@ -148,6 +149,7 @@ export class DeliveryRepository {
               lastErrorCode: decision.code,
               lastErrorMessage: decision.message,
               reconcileAfter: dbNowPlus(reconcileDelayMs),
+              lookupFailures: 0,
             };
         }
       },
@@ -196,6 +198,7 @@ export class DeliveryRepository {
         lastErrorMessage:
           'Taken over because the worker that was sending it is gone',
         reconcileAfter: dbNowPlus(reconcileDelayMs),
+        lookupFailures: 0,
       })
       .from(orphans)
       .where(eq(deliveries.id, orphans.id));
@@ -241,6 +244,7 @@ export class DeliveryRepository {
         alarmId: deliveries.alarmId,
         recipientId: deliveries.recipientId,
         attempts: deliveries.attempts,
+        lookupFailures: deliveries.lookupFailures,
       });
   }
 
@@ -289,6 +293,7 @@ export class DeliveryRepository {
             return {
               status: DeliveryStatus.UNCONFIRMED,
               reconcileAfter: dbNowPlus(decision.delayMs),
+              lookupFailures: sql`${deliveries.lookupFailures} + 1`,
             };
         }
       },

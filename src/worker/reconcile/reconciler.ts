@@ -81,7 +81,7 @@ export class Reconciler {
               decideAfterLookup(
                 lookup,
                 isAlarmCanceling,
-                item.attempts,
+                item,
                 retryOptions(this.config),
               ),
             ),
