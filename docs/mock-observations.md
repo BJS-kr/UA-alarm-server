@@ -60,7 +60,7 @@ API 문서만으로는 알 수 없어서 직접 측정한 mock 서버(`ghcr.io/u
 
 ## 그 밖의 관측
 
-- 수신 거부 사용자는 `SEED`로 고정된다. 기본 `SEED=42`에서 앞쪽 400명 중에는 `u_000089`, `u_000233`, `u_000322`가 해당했다. 테스트에서 영구 실패를 재현할 때 쓸 수 있다.
+- 수신 거부 사용자는 `SEED`와 관계없이 사용자 ID로 정해진다. `SEED=42`와 `SEED=7`에서 앞쪽 400명 중 `u_000089`, `u_000233`, `u_000322`로 같았다. 테스트에서 영구 실패를 재현할 때 쓸 수 있다.
 - 존재하지 않는 사용자는 `400 UNKNOWN_RECIPIENT`를 반환한다(`unknown recipient: u_999999`).
 - 필수 필드가 없으면 `400 INVALID_REQUEST`를 반환한다(`alarmId, recipientId, body are required strings`). 조회에서 `clientRef`를 빠뜨려도 `400 INVALID_REQUEST`다.
 - `messageId`는 컨테이너마다 `m_1`부터 순차적으로 매겨진다.

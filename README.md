@@ -57,7 +57,7 @@ docker compose --profile test run --rm test npm run test:mutation
 docker compose --profile test run --rm test npm run test:sabotage
 ```
 
-끝단 테스트. 실제 mock 이미지(사용자 2000명)에 워커 3대를 띄우고, 대량·긴급 알림을 보내는 도중 워커 1대는 `docker stop`으로 정상 종료하고(종료 로그까지 확인) 다른 1대는 `docker kill`로 죽입니다. 끝난 뒤 우리 DB와 mock의 평가용 집계(`/_admin/stats`) 양쪽으로 수신자마다 외부 기록이 정확히 한 건인지, 사용자 수만큼 Delivery가 만들어졌는지 확인합니다. 이 스크립트는 기존 compose 스택과 볼륨을 지우고 새로 띄웁니다.
+끝단 테스트. 실제 mock 이미지(사용자 2000명)에 워커 3대를 띄우고, 대량·긴급 알림을 보내는 도중 워커 1대는 `docker stop`으로 정상 종료하고(종료 로그까지 확인) 다른 1대는 `docker kill`로 죽입니다. 끝난 뒤 우리 DB와 mock의 평가용 집계(`/_admin/stats`) 양쪽으로 수신자마다 외부 기록이 정확히 한 건인지, 사용자 수만큼 Delivery가 만들어졌는지, 긴급 알림이 대량 알림 뒤에 줄 서지 않았는지 확인합니다. 끝으로 남은 워커로 대량 알림을 보내다 취소하고, CANCELED 뒤에 외부 기록이 늘지 않는지 봅니다. `docker stop`과 `docker kill`로 멈춘 컨테이너는 Docker가 사람이 멈춘 것으로 보아 `restart: unless-stopped`로도 다시 띄우지 않습니다(실행 후 재시작 0회). 그래서 이 테스트는 남은 워커가 넘겨받는 경로를 봅니다. 프로세스가 스스로 끝나거나(잠금 상실) 비정상 종료하면 다시 띄웁니다. 이 스크립트는 기존 compose 스택과 볼륨을 지우고 새로 띄웁니다.
 
 ```bash
 bash scripts/e2e.sh
@@ -127,7 +127,7 @@ CANCELED ◀──남은 건 정리── CANCELING
 
 ### 예시
 
-아래 응답은 이 저장소의 compose 스택(`scripts/e2e.sh`와 같은 구성, 사용자 2000명)에서 실제로 받은 값입니다.
+아래 응답은 이 저장소의 compose 스택(`scripts/e2e.sh`와 같은 구성, 사용자 2000명)에서 실제로 받은 값입니다. 길이를 줄이려고 일부 응답은 헤더와 필드를 생략했습니다.
 
 긴급 알림 생성. 대량 알림은 `"type": "BULK"`이고 `recipientIds`를 넣지 않습니다.
 
@@ -368,7 +368,7 @@ api와 worker는 서로를 호출하지 않고 DB로만 이어집니다. 대량 
 - 한 건은 한 워커만 쥡니다. `FOR UPDATE SKIP LOCKED`로 꺼내면서 행에 워커 ID(owner)와 시도 번호를 씁니다.
 - 결과 기록은 owner와 시도 번호가 그대로일 때만 반영됩니다. 다른 워커가 넘겨받은 뒤 늦게 도착한 결과는 0건 갱신으로 버려집니다(펜싱).
 - 안 나간 것이 확실할 때만 바로 재시도합니다. 요청 바이트가 커널로 다 넘어가기 전에 실패했거나(연결 거부 등), 429·500·503을 받은 경우입니다. mock을 실측해 보니 이 응답들은 기록을 남기지 않았습니다([docs/mock-observations.md](docs/mock-observations.md)).
-- 그 밖의 경우(타임아웃, 보낸 뒤 연결 끊김, 주인이 사라진 건)는 UNCONFIRMED로 두고, 5초 뒤 `GET /v1/messages?clientRef=`로 조회합니다. clientRef는 `{alarmId}:{recipientId}`로 시도마다 같아서 조회 한 번으로 이전 시도가 모두 확인됩니다. 기록이 있으면 SENT로 확정하고, 조회가 성공했는데 기록이 없을 때만 다시 보냅니다. 조회 자체가 실패하면 보내지 않고 조회를 다시 합니다(ADR-0002).
+- 그 밖의 경우(타임아웃, 보낸 뒤 연결 끊김, 주인이 사라진 건)는 UNCONFIRMED로 두고, 5초 뒤 `GET /v1/messages?clientRef=`로 조회합니다. clientRef는 `{alarmId}:{recipientId}`로 시도마다 같아서 조회 한 번으로 이전 시도가 모두 확인됩니다. 기록이 있으면 SENT로 확정하고, 조회가 성공했는데 기록이 없을 때만 다시 보냅니다. 조회 자체가 실패하면 보내지 않고 조회를 다시 하며, 간격은 발송 재시도처럼 1초에서 두 배씩 늘립니다(ADR-0002, 0014).
 - 워커의 생존은 DB가 판정합니다. 워커는 전용 DB 연결로 자기 ID의 advisory lock을 쥐고 있고, 살아 있는 워커 명단은 `pg_locks` 그 자체입니다. 프로세스가 죽으면 Postgres가 잠금을 풀고, 다른 워커가 그 워커의 건을 넘겨받아 위의 조회 경로로 처리합니다(ADR-0004).
 - 멈춘 워커(이벤트 루프 막힘, 긴 GC, `docker pause`)는 다른 워커가 처리합니다. 워커는 2초마다 생존 신호를 보내고, 15초 넘게 조용한 워커가 있으면 다른 워커가 그 워커의 DB 세션을 모두 `pg_terminate_backend`로 끊습니다. 깨어난 워커는 잠금을 잃은 것을 알아채거나 발송 직전 확인(잠금 연결이 최근 5초 안에 확인됐는가)에서 걸려 스스로 종료하고, 재시작하면 새 ID를 받습니다. 통합 테스트에서 실제 워커 프로세스를 `SIGSTOP`으로 멈췄다가 깨워 이 흐름을 확인합니다. 같은 이름으로 되살아나 이전 생의 건을 자기 것으로 착각하는 일이 없도록 컨테이너 이름은 ID로 쓰지 않습니다.
 - 발송 직전 확인은 요청 바이트를 소켓에 쓰기 바로 앞에서 합니다. 그보다 앞에서 확인하면, 소켓 배정이나 TCP 연결을 기다리는 사이에 멈췄다 깨어난 워커가 이미 넘겨받힌 건을 보낼 수 있습니다.
@@ -448,7 +448,7 @@ api와 worker는 서로를 호출하지 않고 DB로만 이어집니다. 대량 
 | 설정·검증·문서 | @nestjs/config, class-validator, @nestjs/swagger | NestJS 표준 조합 |
 | 메트릭 | prom-client | Node에 Prometheus 형식 기능이 없고, 히스토그램을 직접 만들면 실수하기 쉽습니다 |
 | 테스트 | Jest, Stryker | 단위·통합, 변이 테스팅 |
-| 린트·포맷 | ESLint(typescript-eslint, @stylistic), Prettier | NestJS 프로젝트의 기본 도구. 문장 사이 빈 줄 규칙(`padding-line-between-statements`)을 더했습니다 |
+| 린트·포맷 | ESLint(typescript-eslint), Prettier, @stylistic | ESLint와 Prettier는 NestJS 새 프로젝트가 기본으로 쓰는 도구입니다. 문장 사이 빈 줄 규칙(`padding-line-between-statements`)은 ESLint 본체에서 폐기 예정(8.53)이라 그 규칙을 옮겨 간 @stylistic을 더했습니다 |
 
 ### 의존성은 의도적으로 최소화했습니다
 

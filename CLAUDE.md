@@ -40,7 +40,7 @@
 - `if`의 조건은 비교식을 바로 쓰지 않고, 뜻을 드러내는 `is` 접두사 변수에 담아 쓴다. 예: `const isSending = alarm.status === AlarmStatus.SENDING; if (!isSending) return;`
 - 예상하지 못한 오류는 꼭대기(프로세스 안전망, 전역 예외 필터, `PollingLoop`)에서 받는다. 모듈마다 try/catch를 바르지 않는다(ADR-0039).
 - 로그 메시지와 오류 메시지는 영어로 쓴다. 코드 주석과 문서는 한국어다(ADR-0028).
-- 승인된 의존성: NestJS 기본 구성, `@nestjs/config`, `@nestjs/swagger`, `class-validator`, `class-transformer`, `drizzle-orm`, `drizzle-kit`(개발), `pg`, `prom-client`, Jest, Stryker(개발). 그 밖에는 승인이 필요하다(ADR-0005).
+- 승인된 의존성: NestJS 기본 구성, `@nestjs/config`, `@nestjs/swagger`, `class-validator`, `class-transformer`, `drizzle-orm`, `drizzle-kit`(개발), `pg`, `prom-client`, Jest, Stryker(개발), 린트·포맷 도구(개발: ESLint, `@eslint/js`, `typescript-eslint`, `@stylistic/eslint-plugin`, Prettier. 2026-10-16 사용자 승인). 그 밖에는 승인이 필요하다(ADR-0005).
 - 테스트는 ADR-0034의 기준을 따르고, 작성한 테스트를 `docs/requirements.md`의 테스트 열에 연결한다.
 - 원본 명세의 문장을 커밋되는 파일(README 포함)에 옮겨 적지 않는다(ADR-0038).
 - 문서는 기존 문서와 같이 한국어로 쓴다.
