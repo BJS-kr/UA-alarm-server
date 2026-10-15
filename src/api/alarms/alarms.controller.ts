@@ -16,9 +16,12 @@ import {
   ApiExtraModels,
   ApiConflictResponse,
   ApiCreatedResponse,
+  ApiInternalServerErrorResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
+  ApiPayloadTooLargeResponse,
+  ApiServiceUnavailableResponse,
   ApiTags,
   ApiUnauthorizedResponse,
   getSchemaPath,
@@ -48,11 +51,21 @@ const PROBLEM = {
     },
   },
 };
+const UUID_PROBLEM = { ...PROBLEM, description: 'ID가 UUID가 아님' };
 
 @ApiTags('alarms')
 @ApiExtraModels(ProblemView)
 @ApiBearerAuth()
 @ApiUnauthorizedResponse(PROBLEM)
+@ApiServiceUnavailableResponse({
+  ...PROBLEM,
+  description:
+    'DB에 연결할 수 없거나 정해 둔 시간 안에 답이 없음. 잠시 뒤 다시 시도한다 (ADR-0039)',
+})
+@ApiInternalServerErrorResponse({
+  ...PROBLEM,
+  description: '예상하지 못한 오류. 내부 정보 없이 traceId만 준다 (ADR-0019)',
+})
 @Controller('v1/alarms')
 export class AlarmsController {
   constructor(private readonly alarms: AlarmsService) {}
@@ -65,6 +78,7 @@ export class AlarmsController {
   })
   @ApiCreatedResponse({ type: AlarmView })
   @ApiBadRequestResponse(PROBLEM)
+  @ApiPayloadTooLargeResponse(PROBLEM)
   async create(
     @Body() body: CreateAlarmRequest,
     @Res({ passthrough: true }) res: Response,
@@ -94,6 +108,7 @@ export class AlarmsController {
     description: '상태별 Delivery 건수를 조회 시점에 세어 함께 준다.',
   })
   @ApiOkResponse({ type: AlarmDetailView })
+  @ApiBadRequestResponse(UUID_PROBLEM)
   @ApiNotFoundResponse(PROBLEM)
   get(@Param('id', uuidParam) id: string): Promise<AlarmDetailView> {
     return this.alarms.get(id);
@@ -107,6 +122,7 @@ export class AlarmsController {
   })
   @ApiAcceptedResponse({ type: AlarmView, description: '발송이 진행 중' })
   @ApiOkResponse({ type: AlarmView, description: '이미 완료됨' })
+  @ApiBadRequestResponse(UUID_PROBLEM)
   @ApiNotFoundResponse(PROBLEM)
   @ApiConflictResponse(PROBLEM)
   async send(
@@ -131,6 +147,7 @@ export class AlarmsController {
     description: '이미 나가던 건을 정리하는 중',
   })
   @ApiOkResponse({ type: AlarmView, description: '취소가 끝남' })
+  @ApiBadRequestResponse(UUID_PROBLEM)
   @ApiNotFoundResponse(PROBLEM)
   @ApiConflictResponse(PROBLEM)
   async cancel(
@@ -150,6 +167,10 @@ export class AlarmsController {
     description: '수신자 ID 순, 커서 페이지네이션. 상태로 거를 수 있다.',
   })
   @ApiOkResponse({ type: DeliveryListView })
+  @ApiBadRequestResponse({
+    ...PROBLEM,
+    description: 'ID가 UUID가 아니거나 커서·쿼리가 틀림',
+  })
   @ApiNotFoundResponse(PROBLEM)
   deliveries(
     @Param('id', uuidParam) id: string,
