@@ -303,4 +303,14 @@ export const SABOTAGES = [
     test: API_TEST,
     name: 'DB 연결을 얻지 못하면',
   },
+  {
+    id: 'S29',
+    adr: '0004',
+    what: '생존 신호의 확인 시각을 보낸 시각이 아니라 응답을 처리한 시각으로 잡는다',
+    file: 'src/worker/lifecycle/worker-session.ts',
+    find: '        this.lastConfirmedAt = sentAt;',
+    replace: '        this.lastConfirmedAt = process.hrtime.bigint();',
+    test: FAILOVER_TEST,
+    name: '생존 신호를 보낸 직후 멈췄다 깨어나면',
+  },
 ];

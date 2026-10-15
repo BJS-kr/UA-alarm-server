@@ -84,6 +84,8 @@ export class WorkerRuntime {
         connectionString: config.DATABASE_URL!,
         workerId,
         heartbeatIntervalMs: config.HEARTBEAT_INTERVAL_MS,
+        // 응답 없는 생존 신호는 발송 직전 확인과 같은 시간이 지나면 잠금 상실로 본다 (ADR-0004).
+        heartbeatTimeoutMs: config.SEND_GUARD_MS,
         sendGuardMs: config.SEND_GUARD_MS,
       },
       logger,

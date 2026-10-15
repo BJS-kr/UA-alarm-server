@@ -318,25 +318,30 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
 
       process.kill(child.pid!, 'SIGSTOP');
 
-      // 멈춘 동안 다른 워커가 무효로 선언하고 넘겨받아 끝낸다.
-      workers.push(await startWorker(testConfig(database.url, fakeUrl)));
+      // 멈춘 동안 다른 워커가 무효로 선언하고 넘겨받는다. 넘겨받은 건은 결과 확인 대기(3초) 뒤에 조회한다.
+      const survivor = await startWorker(
+        testConfig(database.url, fakeUrl, { RECONCILE_DELAY_MS: '3000' }),
+      );
+
+      workers.push(survivor);
+      await waitFor(
+        async () =>
+          (await survivor.runtime.metrics.invalidations.get()).values[0]
+            ?.value > 0,
+      );
+
+      // 무효로 선언된 직후, 결과 확인 대기가 끝나기 전에 깨운다. 설계가 약속하는 범위다(ADR-0002, 0004).
+      // 확인을 통과하고 소켓에 쓰기 직전에 멈췄던 요청이 깨어나며 나가도, 그 기록은 조회보다 먼저 남아 다시 보내지 않는다.
+      // 대기보다 오래 멈추면 이 틈에서 중복이 날 수 있다. 문서에 남긴 남은 틈이다.
+      process.kill(child.pid!, 'SIGCONT');
+
+      // 깨어난 워커는 잠금을 잃은 것을 알아채고 종료한다. 다른 이유(기록 실패 등)로 죽은 것과 구별하려고 종료 사유를 본다.
+      expect(await exited).toBe(1);
+      expect(logs()).toMatch(/"level":"fatal"[^\n]*Lost the worker lock/);
       await waitFor(
         async () => (await alarmStatus(database.db, alarm.id)) === 'COMPLETED',
         30_000,
       );
-      const invalidations =
-        await workers[0].runtime.metrics.registry.getSingleMetricAsString(
-          'alarm_worker_invalidations_total',
-        );
-
-      expect(invalidations).not.toContain('alarm_worker_invalidations_total 0');
-
-      // 깨어난 워커는 잠금을 잃은 것을 알아채고 종료한다. 다른 이유(기록 실패 등)로 죽은 것과 구별하려고 종료 사유를 본다.
-      // 그 뒤에도 수신자마다 기록은 정확히 한 번이다.
-      process.kill(child.pid!, 'SIGCONT');
-      expect(await exited).toBe(1);
-      expect(logs()).toMatch(/"level":"fatal"[^\n]*Lost the worker lock/);
-      await new Promise((r) => setTimeout(r, 500));
 
       for (const user of fake.users) {
         expect([user, fake.recordsFor(clientRefOf(alarm.id, user))]).toEqual([
@@ -384,6 +389,7 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
         connectionString: database.url,
         workerId: 4646,
         heartbeatIntervalMs: 60_000,
+        heartbeatTimeoutMs: 5_000,
         sendGuardMs: 200,
       },
       new CapturingLogger(),
@@ -394,6 +400,37 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
     extras.push(() => session.stop());
     expect(session.canSend()).toBe(true);
     await new Promise((r) => setTimeout(r, 300));
+    expect(session.canSend()).toBe(false);
+  });
+
+  it('생존 신호를 보낸 직후 멈췄다 깨어나면, 늦게 처리된 응답을 방금 확인된 것으로 보지 않는다', async () => {
+    const session = new WorkerSession(
+      {
+        connectionString: database.url,
+        workerId: 4848,
+        heartbeatIntervalMs: 60_000,
+        // 응답 한도를 길게 두어, 응답이 한도 전에 도착해 깨어난 뒤 처리되는 경우를 만든다.
+        heartbeatTimeoutMs: 5_000,
+        sendGuardMs: 200,
+      },
+      new CapturingLogger(),
+      () => undefined,
+    );
+
+    await session.start();
+    extras.push(() => session.stop());
+
+    // 신호를 보낸 직후 이벤트 루프가 300ms 막힌다(멈춘 워커와 같다). 응답은 그사이 도착해 깨어난 뒤에 처리된다.
+    const heartbeat = (
+      session as unknown as { heartbeat(): Promise<void> }
+    ).heartbeat();
+    const blockedUntil = Date.now() + 300;
+
+    while (Date.now() < blockedUntil) {
+      // 이벤트 루프를 막는다
+    }
+
+    await heartbeat;
     expect(session.canSend()).toBe(false);
   });
 

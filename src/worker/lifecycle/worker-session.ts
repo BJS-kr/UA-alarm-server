@@ -6,6 +6,8 @@ export interface WorkerSessionOptions {
   connectionString: string;
   workerId: number;
   heartbeatIntervalMs: number;
+  /** 생존 신호가 이 시간 안에 응답하지 않으면 잠금을 잃은 것으로 본다. */
+  heartbeatTimeoutMs: number;
   sendGuardMs: number;
 }
 
@@ -28,12 +30,16 @@ export class WorkerSession {
   ) {}
 
   async start(): Promise<void> {
-    const { connectionString, workerId, sendGuardMs, heartbeatIntervalMs } =
-      this.options;
+    const {
+      connectionString,
+      workerId,
+      heartbeatTimeoutMs,
+      heartbeatIntervalMs,
+    } = this.options;
     const connection = new LockConnection(
       connectionString,
       workerApplicationName(workerId, 'lock'),
-      sendGuardMs,
+      heartbeatTimeoutMs,
       (reason) => this.lose(reason),
     );
     const isLocked = await connection.open(workerId);
@@ -73,9 +79,13 @@ export class WorkerSession {
     const connection = this.connection;
     const isHoldingLock = !this.isStopped && connection !== undefined;
     if (!isHoldingLock) return;
+    // 확인 시각은 응답을 받은 시각이 아니라 신호를 보낸 시각이다. 보낸 직후 멈췄다 깨어나면 응답은 깨어난 뒤에야
+    // 처리되는데, 그 시각을 쓰면 그사이 무효로 선언된 워커가 잠깐 "방금 확인됨"이 되어 발송한다.
+    const sentAt = process.hrtime.bigint();
+
     await connection.ping().then(
       () => {
-        this.lastConfirmedAt = process.hrtime.bigint();
+        this.lastConfirmedAt = sentAt;
       },
       (error: Error) => this.lose(`heartbeat failed: ${error.message}`),
     );
