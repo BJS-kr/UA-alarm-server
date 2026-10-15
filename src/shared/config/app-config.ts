@@ -1,4 +1,5 @@
 import { plainToInstance, Type } from 'class-transformer';
+import { maskUrlCredentials } from '../logging/masking';
 import {
   IsIn,
   IsInt,
@@ -92,10 +93,12 @@ function relationErrors(config: AppConfig, role: ProcessRole): string[] {
 export function loadConfig(env: Record<string, string | undefined>, role: ProcessRole): AppConfig {
   const known = new Set(Object.keys(new AppConfig()));
   const defined = Object.fromEntries(
-    Object.entries(env).filter(([k, v]) => known.has(k) && v !== undefined && v !== ''),
+    // 빈 문자열은 값이 없는 것으로 본다.
+    Object.entries(env).filter(([k, v]) => known.has(k) && v),
   );
-  const config = plainToInstance(AppConfig, defined, { exposeDefaultValues: true, enableImplicitConversion: true });
-  const fieldErrors = validateSync(config, { skipMissingProperties: false }).flatMap((e) =>
+  // 기본값은 필드 초기값이 맡고, 숫자 변환은 @Type이 맡는다.
+  const config = plainToInstance(AppConfig, defined);
+  const fieldErrors = validateSync(config).flatMap((e) =>
     Object.values(e.constraints ?? {}).map((msg) => `${e.property}: ${msg}`),
   );
   const errors = [...fieldErrors, ...relationErrors(config, role)];

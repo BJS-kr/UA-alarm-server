@@ -22,13 +22,6 @@ export const DeliveryStatus = {
 } as const;
 export type DeliveryStatus = (typeof DeliveryStatus)[keyof typeof DeliveryStatus];
 
-/** 결과가 아직 바뀔 수 있는 Delivery 상태. 완료 판정의 "끝나지 않은 건"이다 (ADR-0018). */
-export const UNFINISHED_DELIVERY_STATUSES: readonly DeliveryStatus[] = [
-  DeliveryStatus.PENDING,
-  DeliveryStatus.IN_FLIGHT,
-  DeliveryStatus.UNCONFIRMED,
-];
-
 /** 꺼내는 순서의 첫 기준. 긴급이 먼저다 (ADR-0011). */
 export function priorityOf(type: AlarmType): 0 | 1 {
   return type === AlarmType.URGENT ? 0 : 1;

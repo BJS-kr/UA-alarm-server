@@ -6,3 +6,4 @@ reports
 .local
 .git
 *.log
+stryker-tmp

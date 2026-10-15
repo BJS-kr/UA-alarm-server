@@ -18,10 +18,13 @@ describe('꺼내기 (ADR-0011, 0012, 0017)', () => {
     const bulkA = await insertAlarm(database.db, { type: 'BULK', recipients: ['a1', 'a2'] });
     const bulkB = await insertAlarm(database.db, { type: 'BULK', recipients: ['b1', 'b2'] });
     const urgent = await insertAlarm(database.db, { type: 'URGENT', recipients: ['u1'] });
-    const claimed = await new DeliveryStore(database.db, 1).claim(10);
-    expect(claimed.map((d) => d.recipientId)).toEqual(['u1', 'a1', 'a2', 'b1', 'b2']);
-    expect(claimed.map((d) => d.alarmId)).toEqual([urgent.id, bulkA.id, bulkA.id, bulkB.id, bulkB.id]);
-    expect(claimed.every((d) => d.attempts === 1)).toBe(true);
+    const store = new DeliveryStore(database.db, 1);
+    // 순서가 아니라 "토큰 수(LIMIT)만큼만 꺼낼 때 무엇을 고르는가"가 우선순위다. 한 건씩 꺼내 고른 순서를 본다.
+    const picked: Array<{ recipientId: string; alarmId: string; attempts: number }> = [];
+    for (let i = 0; i < 5; i++) picked.push(...(await store.claim(1)));
+    expect(picked.map((d) => d.recipientId)).toEqual(['u1', 'a1', 'a2', 'b1', 'b2']);
+    expect(picked.map((d) => d.alarmId)).toEqual([urgent.id, bulkA.id, bulkA.id, bulkB.id, bulkB.id]);
+    expect(picked.every((d) => d.attempts === 1)).toBe(true);
   });
 
   it('재시도 시각이 안 된 건은 꺼내지 않고, 시각이 되면 원래 자리로 돌아온다', async () => {

@@ -1,9 +1,6 @@
 import * as http from 'node:http';
 import { LookupResult, SendResult } from '../domain/send-outcome';
 
-/** 연결 단계에서 나는 오류. 이 오류면 요청이 나가지 않은 것이 확실하다 (ADR-0037). */
-const CONNECT_PHASE_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH']);
-
 type RawOutcome =
   | { kind: 'response'; status: number; headers: http.IncomingHttpHeaders; body: string }
   | { kind: 'error'; flushed: boolean; code: string; message: string };
@@ -41,11 +38,11 @@ export class ExternalApiClient {
   async sendMessage(input: SendMessageInput, timeoutMs: number): Promise<SendResult> {
     const outcome = await this.request('POST', '/v1/messages', input, timeoutMs);
     if (outcome.kind === 'error') {
-      const notSent = !outcome.flushed && CONNECT_PHASE_CODES.has(outcome.code);
-      const beforeWrite = !outcome.flushed && outcome.code === 'CLIENT_TIMEOUT';
-      return notSent || beforeWrite
-        ? { kind: 'not_sent', code: outcome.code, message: outcome.message }
-        : { kind: 'unknown', code: outcome.code, message: outcome.message };
+      // 요청 바이트를 커널에 다 넘기기 전에 실패했으면(연결 거부, 연결 단계 시간 초과 등) 서버는 완전한 요청을
+      // 받지 못했으므로 처리할 수 없다. 다 넘긴 뒤의 실패는 보냈는지 모른다 (ADR-0037).
+      return outcome.flushed
+        ? { kind: 'unknown', code: outcome.code, message: outcome.message }
+        : { kind: 'not_sent', code: outcome.code, message: outcome.message };
     }
     const { status, body } = outcome;
     const parsed = safeJson(body);
@@ -105,9 +102,7 @@ export class ExternalApiClient {
         {
           method,
           agent: this.agent,
-          headers: payload
-            ? { 'content-type': 'application/json', 'content-length': String(payload.length) }
-            : { accept: 'application/json' },
+          headers: payload ? { 'content-type': 'application/json', 'content-length': String(payload.length) } : {},
         },
         (res) => {
           const chunks: Buffer[] = [];
@@ -135,10 +130,10 @@ export class ExternalApiClient {
   }
 }
 
+/** JSON이 아니면 undefined. 원시값이 와도 호출하는 쪽이 ?.로 읽으므로 그대로 둔다. */
 function safeJson(text: string): Record<string, any> | undefined {
   try {
-    const value: unknown = JSON.parse(text);
-    return value && typeof value === 'object' ? (value as Record<string, any>) : undefined;
+    return JSON.parse(text) as Record<string, any>;
   } catch {
     return undefined;
   }

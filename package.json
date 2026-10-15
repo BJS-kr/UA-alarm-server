@@ -15,7 +15,8 @@
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "test:unit": "node --experimental-vm-modules node_modules/jest/bin/jest.js --selectProjects unit",
     "test:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js --selectProjects integration",
-    "test:mutation": "stryker run"
+    "test:mutation": "stryker run",
+    "test:sabotage": "node test/sabotage/run.mjs"
   },
   "engines": {
     "node": ">=24"

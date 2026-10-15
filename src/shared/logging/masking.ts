@@ -13,10 +13,14 @@ export function maskPhone(phone: string): string {
   return phone.replace(/^(\d{2,3})-?(\d{3,4})-?(\d{4})$/, (_m, a: string, b: string, c: string) => `${a}-${'*'.repeat(b.length)}-${c}`);
 }
 
+/** 접속 주소의 비밀번호를 가린다. postgres://user:pw@host → postgres://user:****@host */
+export function maskUrlCredentials(url: string): string {
+  return url.replace(/\/\/([^:/@]+):([^@]+)@/, '//$1:****@');
+}
+
 const SECRET_KEYS = new Set(['password', 'apikey', 'api_key', 'authorization', 'secret', 'token']);
 const BODY_KEYS = new Set(['body']);
 const PHONE_KEYS = new Set(['phone']);
-const URL_KEYS = new Set(['database_url', 'migration_database_url', 'databaseurl']);
 
 function maskValue(key: string, value: unknown): unknown {
   const k = key.toLowerCase();
@@ -24,11 +28,14 @@ function maskValue(key: string, value: unknown): unknown {
   if (SECRET_KEYS.has(k)) return '****';
   if (BODY_KEYS.has(k)) return maskDigits(value);
   if (PHONE_KEYS.has(k)) return maskPhone(value);
-  if (URL_KEYS.has(k)) return value.replace(/\/\/([^:/@]+):([^@]+)@/, '//$1:****@');
-  return value;
+  // 접속 주소의 비밀번호는 필드 이름과 관계없이 가린다.
+  return maskUrlCredentials(value);
 }
 
-/** 객체를 깊게 따라가며 규칙에 맞는 필드만 바꾼 사본을 돌려준다. 원본은 바꾸지 않는다. */
+/**
+ * 객체를 깊게 따라가며 규칙에 맞는 필드만 바꾼 사본을 돌려준다. 원본은 바꾸지 않는다.
+ * 깊이 제한은 순환 참조로 끝없이 내려가는 것을 막는다.
+ */
 export function maskSensitive(value: unknown, depth = 0): unknown {
   if (depth > 6 || value === null || typeof value !== 'object') return value;
   if (value instanceof Error) return value;

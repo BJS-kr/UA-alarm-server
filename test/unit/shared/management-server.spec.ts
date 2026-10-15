@@ -1,0 +1,43 @@
+import { Counter, Registry } from 'prom-client';
+import { ManagementServer } from '../../../src/shared/health/management-server';
+
+describe('관리 포트 (ADR-0026, 0027)', () => {
+  it('생존·준비 확인을 200/503으로, 메트릭을 Prometheus 형식으로 낸다', async () => {
+    const registry = new Registry();
+    new Counter({ name: 'alarm_test_total', help: 'test', registers: [registry] }).inc(3);
+    let ready = true;
+    const server = new ManagementServer(0, { live: () => true, ready: async () => ready, registry });
+    const port = await server.start();
+    const get = (path: string) => fetch(`http://127.0.0.1:${port}${path}`);
+    try {
+      expect((await get('/health/live')).status).toBe(200);
+      expect((await get('/health/ready')).status).toBe(200);
+      ready = false;
+      const notReady = await get('/health/ready');
+      expect(notReady.status).toBe(503);
+      expect(await notReady.json()).toEqual({ status: 'unavailable' });
+      const metrics = await get('/metrics');
+      expect(metrics.headers.get('content-type')).toContain('text/plain');
+      expect(await metrics.text()).toContain('alarm_test_total 3');
+      expect((await get('/v1/alarms')).status).toBe(404);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('확인 함수가 예외를 던지면 503이다', async () => {
+    const server = new ManagementServer(0, {
+      live: () => {
+        throw new Error('x');
+      },
+      ready: () => true,
+      registry: new Registry(),
+    });
+    const port = await server.start();
+    try {
+      expect((await fetch(`http://127.0.0.1:${port}/health/live`)).status).toBe(503);
+    } finally {
+      await server.stop();
+    }
+  });
+});
