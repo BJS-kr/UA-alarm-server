@@ -45,7 +45,7 @@ docker compose --profile monitoring up
 docker compose --profile test run --rm test
 ```
 
-변이 테스팅(Stryker). 도메인 로직, 설정 검증, 마스킹, HTTP 응답 분류 코드를 일부러 바꿔 보고 테스트가 그 변화를 잡는지 확인합니다. 최근 점수는 97.0%이고, 90% 아래면 실패합니다.
+변이 테스팅(Stryker). 도메인 로직, 설정 검증, 마스킹, HTTP 응답 분류 코드를 일부러 바꿔 보고 테스트가 그 변화를 잡는지 확인합니다. 최근 점수는 97.4%이고, 90% 아래면 실패합니다.
 
 ```bash
 docker compose --profile test run --rm test npm run test:mutation
