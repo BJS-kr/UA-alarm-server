@@ -143,6 +143,31 @@ describe('워커 전체 흐름 (ADR-0002, 0006, 0009, 0011, 0014)', () => {
     expect(statuses.filter(([, s]) => s === 'CANCELED').length).toBeGreaterThan(0);
   });
 
+  it('결과 확인은 외부 기록이 늦게 남는 만큼 기다린 뒤에 해서, 늦게 도착한 요청을 다시 보내지 않는다 (ADR-0002)', async () => {
+    fake.users = userIds(20);
+    // 첫 요청은 응답 타임아웃(500ms)보다 늦게(800ms) 기록된다. 결과 확인 대기(1000ms)가 그 차이를 덮어야 한다.
+    fake.behavior = (_recipientId, attempt) => (attempt === 1 ? { type: 'hang_then_record', hangMs: 800 } : { type: 'accept' });
+    const alarm = await insertAlarm(database.db, { type: 'BULK', expansionDone: false });
+    await start({ RECONCILE_DELAY_MS: '1000' });
+
+    await waitFor(async () => (await alarmStatus(database.db, alarm.id)) === 'COMPLETED', 20_000);
+    for (const user of fake.users) expect([user, fake.recordsFor(clientRefOf(alarm.id, user))]).toEqual([user, 1]);
+  });
+
+  it('외부 서비스가 한동안 전부 실패해도 서킷 브레이커가 멈춰 기다리므로, 재시도를 다 써서 실패하는 건이 없다 (ADR-0014)', async () => {
+    fake.users = userIds(100);
+    // 브레이커가 없으면 재시도 8번(약 1초)을 2초 장애 안에 다 써서 FAILED가 된다.
+    const outageUntil = Date.now() + 2000;
+    fake.behavior = () => (Date.now() < outageUntil ? { type: 'error', status: 503 } : { type: 'accept' });
+    const alarm = await insertAlarm(database.db, { type: 'BULK', expansionDone: false });
+    await start({ RATE_LIMIT_PER_SEC: '200', RATE_BUCKET_CAPACITY: '10', BREAKER_PAUSE_MIN_MS: '500', BREAKER_PAUSE_MAX_MS: '1000' });
+
+    await waitFor(async () => (await alarmStatus(database.db, alarm.id)) === 'COMPLETED', 20_000);
+    const statuses = await deliveryStatuses(database.db, alarm.id);
+    expect(Object.values(statuses).filter((s) => s !== 'SENT')).toEqual([]);
+    for (const user of fake.users) expect([user, fake.recordsFor(clientRefOf(alarm.id, user))]).toEqual([user, 1]);
+  });
+
   it('정상 종료는 보낸 건의 결과를 기록하고 보내지 않은 건을 반납한다 (ADR-0007)', async () => {
     fake.users = userIds(120);
     fake.behavior = () => ({ type: 'accept', delayMs: 200 });

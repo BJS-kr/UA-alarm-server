@@ -24,7 +24,7 @@ for (const sabotage of selected) {
   }
   writeFileSync(sabotage.file, original.replace(sabotage.find, sabotage.replace));
   try {
-    if (sabotage.build) build();
+    if (sabotage.build && build().status !== 0) throw new Error('빌드 실패: 결함이 dist에 반영되지 않았다');
     const run = spawnSync(
       process.execPath,
       // 결함 때문에 열린 핸들이 남아도 끝나도록 --forceExit, 그래도 멈추면 시간 초과로 끊는다.
@@ -36,6 +36,8 @@ for (const sabotage of selected) {
     const failed = run.status !== 0 && /Tests:.*\d+ failed/.test(output);
     const verdict = run.error ? `실행 오류: ${run.error.message}` : !ran ? '테스트가 실행되지 않음' : failed ? '검출' : '놓침';
     results.push({ ...sabotage, verdict });
+  } catch (error) {
+    results.push({ ...sabotage, verdict: error.message });
   } finally {
     writeFileSync(sabotage.file, original);
     if (sabotage.build) build();

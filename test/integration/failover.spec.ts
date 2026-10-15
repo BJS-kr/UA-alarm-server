@@ -3,11 +3,28 @@ import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import { sql } from 'drizzle-orm';
 import { Client } from 'pg';
-import { createPool } from '../../src/shared/db/database';
+import { createDb, createPool } from '../../src/shared/db/database';
 import { clientRefOf } from '../../src/shared/domain/status';
+import { ExternalApiClient } from '../../src/shared/external/external-api.client';
+import { SendBreaker } from '../../src/worker/breaker/send-breaker';
+import { DeliveryStore } from '../../src/worker/dispatch/delivery-store';
+import { Dispatcher } from '../../src/worker/dispatch/dispatcher';
 import { workerApplicationName } from '../../src/worker/lifecycle/worker-identity';
+import { WorkerSession } from '../../src/worker/lifecycle/worker-session';
+import { WorkerMetrics } from '../../src/worker/metrics/worker-metrics';
+import { TokenBucket } from '../../src/worker/rate-limit/token-bucket';
 import { FakeExternalApi } from './support/fake-external-api';
-import { alarmStatus, deliveryStatuses, insertAlarm, RunningWorker, startWorker, testConfig, userIds, waitFor } from './support/fixtures';
+import {
+  alarmStatus,
+  CapturingLogger,
+  deliveryStatuses,
+  insertAlarm,
+  RunningWorker,
+  startWorker,
+  testConfig,
+  userIds,
+  waitFor,
+} from './support/fixtures';
 import { createTestDatabase, TestDatabase } from './support/test-database';
 
 const COMPILED_WORKER = path.join(__dirname, '..', '..', 'dist', 'main-worker.js');
@@ -51,11 +68,8 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
     return { client, lost };
   }
 
-  /**
-   * 컴파일된 워커를 별도 프로세스로 띄우고, 발송 도중(응답을 기다리는 건이 있을 때)까지 기다린다.
-   * 워커가 남긴 로그(JSON 줄)를 함께 돌려준다.
-   */
-  async function spawnSendingWorker(): Promise<{ child: ChildProcess; logs: () => string }> {
+  /** 컴파일된 워커를 별도 프로세스로 띄운다. 워커가 남긴 로그(JSON 줄)를 함께 돌려준다. */
+  function spawnWorker(): { child: ChildProcess; logs: () => string } {
     const child = spawn(process.execPath, [COMPILED_WORKER], {
       env: {
         ...process.env,
@@ -79,11 +93,17 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
     extras.push(async () => {
       child.kill('SIGKILL');
     });
+    return { child, logs: () => logs };
+  }
+
+  /** spawnWorker로 띄우고, 발송 도중(응답을 기다리는 건이 있을 때)까지 기다린다. */
+  async function spawnSendingWorker(): Promise<{ child: ChildProcess; logs: () => string }> {
+    const worker = spawnWorker();
     await waitFor(async () => {
       const inFlight = await database.db.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM deliveries WHERE status = 'IN_FLIGHT'`);
       return fake.received.length > 30 && inFlight.rows[0].n > 0;
     }, 20_000);
-    return { child, logs: () => logs };
+    return worker;
   }
 
   async function claimAs(workerId: number, alarmId: string, recipients: string[]): Promise<void> {
@@ -197,4 +217,75 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
       for (const user of fake.users) expect([user, fake.recordsFor(clientRefOf(alarm.id, user))]).toEqual([user, 1]);
     },
   );
+
+  (existsSync(COMPILED_WORKER) ? it : it.skip)(
+    '강제 종료된 워커 프로세스를 같은 설정으로 다시 띄워도(재시작) 이전 생의 건을 넘겨받아 끝낸다',
+    async () => {
+      fake.users = userIds(150);
+      fake.behavior = () => ({ type: 'accept', delayMs: 300 });
+      const alarm = await insertAlarm(database.db, { type: 'BULK', expansionDone: false });
+
+      const first = await spawnSendingWorker();
+      first.child.kill('SIGKILL');
+      await new Promise((resolve) => first.child.once('exit', resolve));
+      // restart 정책이 같은 컨테이너를 다시 띄운 것과 같다. 새 프로세스가 새 ID를 뽑아야 이전 생의 건을 주인 없는 건으로 본다.
+      spawnWorker();
+      await waitFor(async () => (await alarmStatus(database.db, alarm.id)) === 'COMPLETED', 30_000);
+      for (const user of fake.users) expect([user, fake.recordsFor(clientRefOf(alarm.id, user))]).toEqual([user, 1]);
+    },
+  );
+
+  it('생존 신호가 한동안 확인되지 않으면 발송 직전 확인이 실패한다', async () => {
+    // 생존 신호 간격을 길게 두어 이벤트 루프가 막혀 신호를 못 보낸 상황을 만든다.
+    const session = new WorkerSession(
+      { connectionString: database.url, workerId: 4646, heartbeatIntervalMs: 60_000, sendGuardMs: 200 },
+      new CapturingLogger(),
+      () => undefined,
+    );
+    await session.start();
+    extras.push(() => session.stop());
+    expect(session.canSend()).toBe(true);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(session.canSend()).toBe(false);
+  });
+
+  it('꺼낼 때 확인을 통과했어도, 소켓에 쓰기 직전 확인이 실패하면 보내지 않고 대기로 돌린다', async () => {
+    const workerId = 4747;
+    const alarm = await insertAlarm(database.db, { type: 'URGENT', recipients: ['r1'] });
+    let allowed = true;
+    let requested = false;
+    // 요청을 만든 직후(소켓에 쓰기 전)부터 확인이 실패한다. 연결을 기다리는 사이에 멈췄다 깨어난 경우와 같다.
+    class FlippingClient extends ExternalApiClient {
+      override sendMessage(...args: Parameters<ExternalApiClient['sendMessage']>) {
+        allowed = false;
+        requested = true;
+        return super.sendMessage(...args);
+      }
+    }
+    const client = new FlippingClient(fakeUrl, 5);
+    const pool = createPool(database.url, workerApplicationName(workerId, 'pool'), 2);
+    const db = createDb(pool);
+    const dispatcher = new Dispatcher({
+      config: testConfig(database.url, fakeUrl),
+      store: new DeliveryStore(db, workerId),
+      bucket: new TokenBucket(db, 1000, 50),
+      client,
+      session: { canSend: () => allowed } as unknown as WorkerSession,
+      breaker: { record: async () => undefined } as unknown as SendBreaker,
+      metrics: new WorkerMetrics(),
+      logger: new CapturingLogger(),
+      onFatal: (reason) => {
+        throw new Error(reason);
+      },
+    });
+    dispatcher.start();
+    extras.push(async () => {
+      await dispatcher.stop(0);
+      client.close();
+      await pool.end();
+    });
+
+    await waitFor(async () => requested && (await deliveryStatuses(database.db, alarm.id)).r1 === 'PENDING', 5_000);
+    expect(fake.received).toHaveLength(0);
+  });
 });

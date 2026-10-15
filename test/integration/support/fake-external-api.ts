@@ -12,7 +12,9 @@ export type SendBehavior =
   | { type: 'error'; status: 500 | 503 }
   | { type: 'rate_limit'; retryAfterSec?: number }
   /** 접수(기록)는 하고 응답을 늦게 준다. mock의 30초 지연 응답과 같다. */
-  | { type: 'record_then_hang'; hangMs: number };
+  | { type: 'record_then_hang'; hangMs: number }
+  /** 요청이 아직 오는 중이거나 외부 서비스가 늦게 기록하는 경우. hangMs 뒤에 기록하고 응답한다. */
+  | { type: 'hang_then_record'; hangMs: number };
 
 export interface ReceivedSend {
   at: number;
@@ -119,6 +121,12 @@ export class FakeExternalApi {
         return void res.writeHead(behavior.status).end(JSON.stringify({ code: behavior.status === 500 ? 'INTERNAL_ERROR' : 'SERVICE_UNAVAILABLE' }));
       case 'rate_limit':
         return void res.writeHead(429, { 'retry-after': String(behavior.retryAfterSec ?? 1) }).end('{"code":"RATE_LIMITED"}');
+      case 'hang_then_record': {
+        await sleep(behavior.hangMs);
+        const message = this.store(body.clientRef, body.recipientId);
+        if (!res.destroyed) res.writeHead(202).end(JSON.stringify({ messageId: message.messageId }));
+        return;
+      }
       case 'record_then_hang': {
         const message = this.store(body.clientRef, body.recipientId);
         await sleep(behavior.hangMs);
