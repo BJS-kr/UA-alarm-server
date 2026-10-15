@@ -1,0 +1,6 @@
+# 끝단 테스트용 override (ADR-0035). 기본 동작 특성(오류, 지연, 처리량 제한)은 그대로 두고 사용자 수만 줄인다.
+# docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d
+services:
+  mock:
+    environment:
+      USER_COUNT: '2000'

@@ -1,0 +1,53 @@
+{
+  "name": "alarm-dispatcher",
+  "version": "0.1.0",
+  "private": true,
+  "description": "다수의 수신자에게 알림을 발송하는 NestJS 백엔드",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start:api": "node dist/main-api.js",
+    "start:worker": "node dist/main-worker.js",
+    "migrate": "node dist/migrate.js",
+    "db:generate": "drizzle-kit generate",
+    "openapi:export": "node dist/scripts/export-openapi.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "jest",
+    "test:unit": "jest --selectProjects unit",
+    "test:integration": "jest --selectProjects integration",
+    "test:mutation": "stryker run"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@nestjs/testing": "12.1.3",
+    "@stryker-mutator/core": "10.0.0",
+    "@stryker-mutator/jest-runner": "10.0.0",
+    "@types/express": "5.0.6",
+    "@types/jest": "30.0.0",
+    "@types/node": "24.19.2",
+    "@types/pg": "8.23.1",
+    "drizzle-kit": "0.31.11",
+    "jest": "30.5.2",
+    "ts-jest": "29.4.15",
+    "typescript": "6.0.3"
+  },
+  "dependencies": {
+    "@nestjs/common": "12.1.3",
+    "@nestjs/config": "12.0.1",
+    "@nestjs/core": "12.1.3",
+    "@nestjs/platform-express": "12.1.3",
+    "@nestjs/swagger": "12.0.2",
+    "class-transformer": "0.5.1",
+    "class-validator": "0.15.1",
+    "drizzle-orm": "0.45.4",
+    "pg": "8.23.1",
+    "prom-client": "15.1.3",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  },
+  "overrides": {
+    "qs": "^6.16.1"
+  }
+}

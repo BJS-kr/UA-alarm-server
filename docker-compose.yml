@@ -1,0 +1,110 @@
+# docker compose up 한 번으로 전체가 뜬다 (ADR-0025).
+# 비밀번호와 API 키는 개발용 값이다. 운영에서는 같은 이미지에 환경변수만 바꿔 배포한다 (ADR-0030).
+name: alarm
+
+x-app: &app
+  build: .
+  image: alarm-dispatcher:local
+  init: true
+  restart: unless-stopped
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    mock:
+      condition: service_healthy
+
+x-app-env: &app-env
+  DATABASE_URL: postgres://alarm_app:alarm_app_pw@postgres:5432/alarm
+  EXTERNAL_API_BASE_URL: http://mock:4000
+  LOG_LEVEL: info
+  MANAGEMENT_PORT: '9100'
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_PASSWORD: postgres_pw
+      ALARM_MIGRATOR_PASSWORD: alarm_migrator_pw
+      ALARM_APP_PASSWORD: alarm_app_pw
+    volumes:
+      - ./docker/postgres/init.sh:/docker-entrypoint-initdb.d/10-init.sh:ro
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      # 초기화 중의 임시 서버는 TCP를 열지 않으므로, TCP로 확인해야 init 스크립트가 끝난 뒤에 healthy가 된다.
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U postgres -d alarm']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  mock:
+    image: ghcr.io/us-all/backend-assignment-api:1.2
+    # 이미지에 내장된 GET /health 헬스체크를 기동 순서에만 쓴다 (ADR-0014).
+    restart: unless-stopped
+
+  migrate:
+    build: .
+    image: alarm-dispatcher:local
+    command: ['node', 'dist/migrate.js']
+    environment:
+      MIGRATION_DATABASE_URL: postgres://alarm_migrator:alarm_migrator_pw@postgres:5432/alarm
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  api:
+    <<: *app
+    command: ['node', 'dist/main-api.js']
+    environment:
+      <<: *app-env
+      PORT: '3000'
+      API_KEY: dev-api-key
+    ports:
+      - '3000:3000'
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:9100/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  worker:
+    <<: *app
+    command: ['node', 'dist/main-worker.js']
+    environment:
+      <<: *app-env
+    deploy:
+      replicas: 2
+    # 진행 중인 요청(최대 10초)을 마무리할 시간. Docker 기본값 10초로는 잘린다 (ADR-0007).
+    stop_grace_period: 30s
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:9100/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+
+  # docker compose --profile test run --rm test (ADR-0035)
+  test:
+    profiles: ['test']
+    build:
+      context: .
+      target: test
+    environment:
+      TEST_DATABASE_ADMIN_URL: postgres://postgres:postgres_pw@postgres:5432/postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # docker compose --profile monitoring up (ADR-0027)
+  prometheus:
+    profiles: ['monitoring']
+    image: prom/prometheus:v3.5.0
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - '9090:9090'
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
