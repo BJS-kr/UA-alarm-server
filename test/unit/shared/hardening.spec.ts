@@ -17,7 +17,9 @@ import {
 import { AlarmStatus } from '../../../src/shared/domain/status';
 import { logContext } from '../../../src/shared/logging/log-context';
 import {
+  maskError,
   maskSensitive,
+  maskStack,
   maskUrlCredentials,
 } from '../../../src/shared/logging/masking';
 
@@ -187,6 +189,80 @@ describe('마스킹 규칙 (ADR-0028)', () => {
     });
     expect(maskSensitive(error)).not.toBeInstanceOf(Error);
     expect(maskSensitive('본문 1234')).toBe('본문 1234');
+  });
+});
+
+describe('오류 마스킹의 경계 (ADR-0028)', () => {
+  it('오류 종류를 나타내는 필드는 숫자가 있어도 그대로 두고, 비밀 키는 가린다', () => {
+    const error = Object.assign(new Error('x'), {
+      code: '23505',
+      errno: '1234',
+      syscall: 'connect6000',
+      severity: 'ERROR0000',
+      detail: 'row (482913)',
+      token: 'abc',
+    });
+
+    expect(maskError(error)).toMatchObject({
+      code: '23505',
+      errno: '1234',
+      syscall: 'connect6000',
+      severity: 'ERROR0000',
+      detail: 'row (******)',
+      token: '****',
+    });
+  });
+
+  it('원시값이 아닌 필드는 옮기지 않는다 (바인딩 값 배열 등)', () => {
+    const error = Object.assign(new Error('x'), { params: ['482913'] });
+
+    expect(maskError(error)).not.toHaveProperty('params');
+  });
+
+  it('Error가 아닌 cause도 가린다', () => {
+    const text = maskError(new Error('x', { cause: 'otp 482913' }));
+    const object = maskError(new Error('x', { cause: { body: '1234' } }));
+
+    expect(text.cause).toBe('otp ******');
+    expect(object.cause).toEqual({ body: '****' });
+  });
+
+  it('AggregateError의 오류들도 가린다', () => {
+    const error = new AggregateError([new Error('otp 482913')], 'many');
+
+    expect(
+      (maskError(error).errors as Array<{ message: string }>)[0].message,
+    ).toBe('otp ******');
+  });
+
+  it('cause가 순환하거나 너무 깊으면 멈춘다', () => {
+    const a = new Error('a');
+    const b = new Error('b', { cause: a });
+
+    a.cause = b;
+    expect((maskError(a).cause as { cause: unknown }).cause).toBe('[Circular]');
+
+    let deep = new Error('0');
+
+    for (let i = 1; i <= 7; i++) deep = new Error(String(i), { cause: deep });
+    let level: Record<string, unknown> = maskError(deep);
+    let depth = 0;
+
+    while (typeof level.cause === 'object') {
+      level = level.cause as Record<string, unknown>;
+      depth++;
+    }
+
+    expect(depth).toBe(5);
+    expect(level.cause).toBe('[Truncated]');
+  });
+
+  it('스택의 호출 위치 줄은 그대로 두고 메시지 줄만 가린다', () => {
+    const stack = 'Error: otp 482913\n    at f (/app/dist/x.js:1234:56)';
+
+    expect(maskStack(stack)).toBe(
+      'Error: otp ******\n    at f (/app/dist/x.js:1234:56)',
+    );
   });
 });
 
