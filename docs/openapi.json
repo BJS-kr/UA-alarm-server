@@ -501,7 +501,7 @@
           },
           "title": {
             "type": "string",
-            "example": "현재 상태에서 할 수 없는 요청"
+            "example": "Not allowed in the current state"
           },
           "status": {
             "type": "number",

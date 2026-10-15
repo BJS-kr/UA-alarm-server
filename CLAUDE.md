@@ -36,6 +36,10 @@
 
 - 용어는 `CONTEXT.md`를 따른다. 예: Delivery의 전송 중 상태는 `IN_FLIGHT`이며 `SENDING`은 Alarm 상태다.
 - DB 쓰기는 조건을 명시한 문장으로만 한다. 읽은 엔티티를 통째로 저장하지 않는다(ADR-0016, 0036).
+- SQL은 저장소(`*.repository.ts`)에만 둔다. 서비스와 워커 루프는 흐름만 표현한다. 쿼리는 Drizzle 빌더로 쓰고, `sql` 템플릿은 빌더로 표현할 수 없는 곳에만 쓴다(ADR-0036).
+- `if`의 조건은 비교식을 바로 쓰지 않고, 뜻을 드러내는 `is` 접두사 변수에 담아 쓴다. 예: `const isSending = alarm.status === AlarmStatus.SENDING; if (!isSending) return;`
+- 예상하지 못한 오류는 꼭대기(프로세스 안전망, 전역 예외 필터, `PollingLoop`)에서 받는다. 모듈마다 try/catch를 바르지 않는다(ADR-0039).
+- 로그 메시지와 오류 메시지는 영어로 쓴다. 코드 주석과 문서는 한국어다(ADR-0028).
 - 승인된 의존성: NestJS 기본 구성, `@nestjs/config`, `@nestjs/swagger`, `class-validator`, `class-transformer`, `drizzle-orm`, `drizzle-kit`(개발), `pg`, `prom-client`, Jest, Stryker(개발). 그 밖에는 승인이 필요하다(ADR-0005).
 - 테스트는 ADR-0034의 기준을 따르고, 작성한 테스트를 `docs/requirements.md`의 테스트 열에 연결한다.
 - 원본 명세의 문장을 커밋되는 파일(README 포함)에 옮겨 적지 않는다(ADR-0038).

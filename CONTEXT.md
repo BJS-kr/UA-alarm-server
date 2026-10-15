@@ -1,6 +1,6 @@
 # 알림 발송 시스템
 
-다수의 수신자에게 알림을 만들어 외부 발송 서비스로 내보내고, 수신자별 결과를 추적하는 시스템.
+관리자가 만든 알림을 외부 발송 서비스로 수신자마다 한 건씩 내보내고, 수신자별 결과를 추적하는 시스템.
 
 ## Language
 
@@ -9,11 +9,11 @@
 _Avoid_: Notification, Message, Campaign, Template
 
 **Bulk Alarm (대량 알림)**:
-전체 사용자에게 발송하는 Alarm.
+사용자 API에 있는 모든 사용자가 수신자인 Alarm.
 _Avoid_: Broadcast, 일반 알림
 
 **Urgent Alarm (긴급 알림)**:
-생성 시 지정한 사용자(최대 100명)에게 발송하며, Bulk Alarm보다 먼저 처리되는 Alarm.
+만들 때 수신자를 직접 고르며(100명까지), 발송 순서에서 Bulk Alarm보다 앞서는 Alarm.
 _Avoid_: Priority alarm, Transactional
 
 ### Alarm 상태

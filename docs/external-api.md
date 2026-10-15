@@ -1,40 +1,38 @@
 # 외부 발송 API (mock) 계약 요약
 
-설계 판단의 근거가 되는 mock 서버(`ghcr.io/us-all/backend-assignment-api:1.2`, 포트 4000)의 문서상 계약이다. 문서로는 알 수 없어 직접 측정한 동작은 [mock-observations.md](./mock-observations.md)에 따로 정리했다.
+설계 판단의 근거가 되는 mock 서버(`ghcr.io/us-all/backend-assignment-api:1.2`, 포트 4000)를 우리가 쓰는 범위에서 정리했다. 동작 수치는 모두 직접 잰 값이며 측정 방법은 [mock-observations.md](./mock-observations.md)에 있다.
 
-## 엔드포인트
+## 우리가 쓰는 엔드포인트
 
-| 용도 | 요청 | 응답 |
+| 용도 | 요청 | 성공 응답 |
 | --- | --- | --- |
-| 사용자 조회 | `GET /v1/users?cursor=&limit=` (limit 1~1000, 기본 100) | `200 { users: [{id, name, phone}], nextCursor: string \| null }` |
-| 메시지 발송 | `POST /v1/messages { alarmId, recipientId, body, clientRef? }` | `202 { messageId }` |
-| 발송 내역 조회 | `GET /v1/messages?clientRef=` | `200 { messages: [{messageId, recipientId, sentAt}] }` (없으면 빈 배열, 같은 clientRef로 여러 번 보냈으면 모두) |
-| 헬스체크 | `GET /health` | `200 { ok: true }` |
+| 사용자 조회 | `GET /v1/users?cursor=&limit=` | `200 { users: [{ id, ... }], nextCursor }`. 마지막 페이지면 `nextCursor`가 `null`이다 |
+| 메시지 발송 | `POST /v1/messages { alarmId, recipientId, body, clientRef }` | `202 { messageId }` |
+| 발송 내역 조회 | `GET /v1/messages?clientRef=` | `200 { messages: [{ messageId, recipientId, sentAt }] }`. 같은 clientRef로 여러 번 보냈으면 모두 나온다 |
+| 헬스체크 | `GET /health` | `200`. compose 기동 순서에만 쓴다(ADR-0014) |
 
-- 발송 요청 본문에 `title` 필드가 없다. `body`만 있다.
-- 발송은 수신자 1명 단위다. 배치 발송 API는 없다.
+- 발송 요청에는 제목을 담는 자리가 없다. 본문만 보낸다(ADR-0021).
+- 발송은 수신자 한 명 단위다.
+- 사용자 조회의 커서는 불투명한 값으로 다룬다(ADR-0006).
 
-## 에러
+## 응답과 우리의 처리
 
-본문: `{ code, message }`
+오류 본문은 `{ code, message }`다. 기록 여부는 각 응답 뒤에 발송 내역을 조회해 확인했다.
 
-| 상태 | code | 발송 여부 | 성격 |
-| --- | --- | --- | --- |
-| 400 | INVALID_REQUEST | 안 됨 | 영구 (우리 버그) |
-| 400 | UNKNOWN_RECIPIENT | 안 됨 | 영구 |
-| 400 | RECIPIENT_BLOCKED | 안 됨 | 영구 (약 1% 사용자, 항상 실패) |
-| 429 | RATE_LIMITED | 안 됨 | 일시, `Retry-After`(초) 포함 |
-| 500 | INTERNAL_ERROR | 안 됨 | 일시 |
-| 503 | SERVICE_UNAVAILABLE | 안 됨 | 일시 |
+| 응답 | 외부 기록 | 우리의 처리 |
+| --- | --- | --- |
+| 202 | 남음 | SENT |
+| 400 (`RECIPIENT_BLOCKED` 등) | 없음 | 영구 실패. 같은 수신자는 다시 보내도 늘 400이다 |
+| 429 + `Retry-After` | 없음 | 모든 워커가 함께 멈췄다가 다시 보낸다. 시도 횟수에 세지 않는다 |
+| 500, 503 | 없음 | 백오프 뒤 재시도 |
+| 응답이 늦거나 끊김 | 접수 즉시 남음 | 결과 미확정으로 두고 발송 내역 조회로 확정한다(ADR-0002) |
 
-## 동작 특성
+## 실측한 동작
 
-- 처리량 제한: `POST /v1/messages` 전체 합산 초당 50건. 사용자 조회·내역 조회는 제한 대상이 아니다.
-- 일시 오류 약 5% (500/503).
-- 약 2%는 **발송은 처리되지만** 응답이 30초 뒤에 온다.
-- 약 5%는 3초 이상 걸린다.
-- 중복 제거를 하지 않는다. `clientRef`는 저장만 하고, 내역 조회로 확인할 수 있다.
-
-## 환경변수 (개발 중 조정 가능)
-
-`PORT`(4000), `USER_COUNT`(100000), `RATE_LIMIT`(50), `ERROR_RATE`(0.05), `TIMEOUT_RATE`(0.02), `TIMEOUT_MS`(30000), `SLOW_RATE`(0.05), `SLOW_MS`(3000), `BLOCKED_PERCENT`(1), `SEED`(42)
+- 처리량 제한은 발송 요청에만 걸리고, 용량 50·초당 50 충전의 토큰 버킷처럼 동작한다. 거절된 요청은 토큰을 쓰지 않는다.
+- 기본 설정에서 400건을 보냈을 때 202가 93.8%, 500이 3.8%, 503이 1.8%, 400이 0.75%였다.
+- 지연은 p50 64ms, p95 3.2초, p99 30초였다. 느린 응답은 3.0~4.5초였고, 가장 긴 지연은 설정한 값(기본 30초)에 정확히 맞춰 왔다.
+- 응답이 아무리 늦어도 기록은 요청을 받은 직후에 남았다. 클라이언트가 먼저 연결을 끊어도 기록은 남았다.
+- 같은 clientRef로 두 번 성공하면 기록도 두 건 남는다. 중복 제거는 우리 몫이다(ADR-0002, 0004).
+- 동작 비율과 사용자 수는 컨테이너 환경변수로 바꿀 수 있다. 측정과 끝단 테스트에 쓴 값은 [mock-observations.md](./mock-observations.md)와 `docker-compose.e2e.yml`에 있다.
+- `ADMIN=1`로 띄우면 평가용 집계(`GET /_admin/stats?alarmId=`)가 켜진다. 알림별 수신자 수, 중복 수신자, 누락 수신자를 외부 서비스 쪽 기록으로 센다. 끝단 테스트가 이것으로 누락·중복을 확인한다.
