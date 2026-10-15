@@ -4,6 +4,7 @@ import { sql } from 'drizzle-orm';
 import { createApiApp } from '../../src/api/create-api-app';
 import { loadConfig } from '../../src/shared/config/app-config';
 import { createPool } from '../../src/shared/db/database';
+import { encodeCursor } from '../../src/shared/domain/cursor';
 import { CapturingLogger, insertAlarm } from './support/fixtures';
 import { createTestDatabase, TestDatabase } from './support/test-database';
 
@@ -127,6 +128,24 @@ describe('API (ADR-0015, 0016, 0019~0024)', () => {
       'recipientIds',
     ],
     ['공백 제목', { type: 'BULK', title: '   ', body: 'b' }, 'title'],
+    // 아래 셋은 검증을 통과해 DB에서 거절되면 500이 되던 값이다.
+    ['NUL이 든 제목', { type: 'BULK', title: 'a\u0000b', body: 'b' }, 'title'],
+    [
+      'NUL이 든 수신자',
+      { type: 'URGENT', title: 't', body: 'b', recipientIds: ['u\u00001'] },
+      'recipientIds',
+    ],
+    // ❤️는 코드 포인트 두 개(U+2764 U+FE0F)다. DB의 char_length는 둘 다 센다.
+    [
+      '코드 포인트로 100자를 넘는 제목',
+      { type: 'BULK', title: '❤️'.repeat(51), body: 'b' },
+      'title',
+    ],
+    [
+      '코드 포인트로 1000자를 넘는 본문',
+      { type: 'BULK', title: 't', body: '❤️'.repeat(501) },
+      'body',
+    ],
   ])('%s → 400과 필드별 오류 (ADR-0021)', async (_name, body, field) => {
     const res = await call('POST', '/v1/alarms', body);
 
@@ -135,6 +154,41 @@ describe('API (ADR-0015, 0016, 0019~0024)', () => {
     expect(res.json.errors.map((e: { field: string }) => e.field)).toContain(
       field,
     );
+  });
+
+  it('코드 포인트로 정확히 한도인 제목과 본문은 받는다 (DB와 같은 기준)', async () => {
+    const res = await call('POST', '/v1/alarms', {
+      type: 'BULK',
+      title: '❤️'.repeat(50),
+      body: '❤️'.repeat(500),
+    });
+
+    expect(res.status).toBe(201);
+  });
+
+  it('본문이 너무 큰 요청은 413 Problem Details로 답한다', async () => {
+    const res = await call('POST', '/v1/alarms', {
+      type: 'BULK',
+      title: 't',
+      body: 'x'.repeat(200_000),
+    });
+
+    expect(res.status).toBe(413);
+    expect(res.json.type).toBe('/problems/bad-request');
+  });
+
+  it('NUL이 든 수신자 커서는 400이다', async () => {
+    const alarm = await insertAlarm(database.db, {
+      type: 'BULK',
+      recipients: ['u_1'],
+    });
+    const cursor = encodeCursor('u\u0000');
+    const res = await call(
+      'GET',
+      `/v1/alarms/${alarm.id}/deliveries?cursor=${cursor}`,
+    );
+
+    expect(res.status).toBe(400);
   });
 
   it('잘못된 ID는 400, 없는 알림은 404 (ADR-0020)', async () => {

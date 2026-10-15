@@ -183,7 +183,9 @@ function decodeAlarmCursor(cursor: string): string {
 
 function decodeRecipientCursor(cursor: string): string {
   const position = decodeCursor(cursor);
-  const isRecipientId = typeof position === 'string';
+  // 직접 만든 커서에 NUL이 들어 있으면 DB가 문장을 거절해 500이 된다.
+  const isRecipientId =
+    typeof position === 'string' && !position.includes('\u0000');
   if (!isRecipientId) throw badRequest('Invalid cursor');
 
   return position;

@@ -9,7 +9,6 @@ import {
   IsInt,
   IsOptional,
   IsString,
-  Length,
   Matches,
   Max,
   Min,
@@ -19,6 +18,7 @@ import {
   AlarmType,
   DeliveryStatus,
 } from '../../shared/domain/status';
+import { CharLength, NoNulCharacter } from '../http/validation';
 
 const NOT_BLANK = /\S/;
 
@@ -38,7 +38,8 @@ export class CreateAlarmRequest {
     description: '알림을 구별하는 관리용 이름. 외부로 발송되지 않는다.',
   })
   @IsString()
-  @Length(1, 100)
+  @CharLength(1, 100)
+  @NoNulCharacter()
   @Matches(NOT_BLANK, { message: 'title must not be blank' })
   title!: string;
 
@@ -48,7 +49,8 @@ export class CreateAlarmRequest {
     description: '수신자에게 발송되는 본문',
   })
   @IsString()
-  @Length(1, 1000)
+  @CharLength(1, 1000)
+  @NoNulCharacter()
   @Matches(NOT_BLANK, { message: 'body must not be blank' })
   body!: string;
 
@@ -65,7 +67,8 @@ export class CreateAlarmRequest {
   @ArrayMaxSize(100)
   @ArrayUnique({ message: 'recipientIds must not contain duplicates' })
   @IsString({ each: true })
-  @Length(1, 64, { each: true })
+  @CharLength(1, 64, { each: true })
+  @NoNulCharacter({ each: true })
   recipientIds?: string[];
 }
 

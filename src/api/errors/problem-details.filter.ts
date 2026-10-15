@@ -91,6 +91,20 @@ export class ProblemDetailsFilter implements ExceptionFilter {
       };
     }
 
+    // body-parser의 오류(본문이 너무 큼 등)는 HttpException이 아니지만 4xx 상태를 담고 있다.
+    const parserStatus = exposedClientStatus(exception);
+    const isRejectedByParser = parserStatus !== undefined;
+    if (isRejectedByParser) {
+      return {
+        status: parserStatus,
+        problem: {
+          type: ProblemType.BAD_REQUEST,
+          title: 'Bad request',
+          detail: (exception as Error).message,
+        },
+      };
+    }
+
     const isUnavailable = isDatabaseUnavailable(exception);
     if (isUnavailable) {
       return {
@@ -111,6 +125,22 @@ export class ProblemDetailsFilter implements ExceptionFilter {
       },
     };
   }
+}
+
+/**
+ * http-errors 형식(body-parser가 쓴다)의 4xx 상태. 이 형식은 클라이언트에게 보여도 되는 오류에만 expose를 켠다.
+ * expose를 함께 보는 것은, 상태 필드가 있는 다른 오류(외부 호출 등)를 클라이언트 잘못으로 답하지 않기 위해서다.
+ */
+function exposedClientStatus(exception: unknown): number | undefined {
+  const { status, expose } = (exception ?? {}) as {
+    status?: unknown;
+    expose?: unknown;
+  };
+  const isClientStatus =
+    typeof status === 'number' && status >= 400 && status < 500;
+  const isExposedClientError = expose === true && isClientStatus;
+
+  return isExposedClientError ? status : undefined;
 }
 
 /**

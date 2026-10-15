@@ -14,6 +14,7 @@ const FAILOVER_TEST = 'test/integration/failover.spec.ts';
 const FLOW_TEST = 'test/integration/worker-flow.spec.ts';
 const API_TEST = 'test/integration/api.spec.ts';
 const LOGGING_TEST = 'test/unit/shared/config-and-logging.spec.ts';
+const VALIDATION = 'src/api/http/validation.ts';
 
 export const SABOTAGES = [
   {
@@ -333,5 +334,36 @@ export const SABOTAGES = [
     replace: '    return super.serializeError(error);',
     test: LOGGING_TEST,
     name: '오류를 넘긴 로그는 message, stack, detail과 cause의 숫자를 가린다',
+  },
+  {
+    id: 'S32',
+    adr: '0021',
+    what: '입력 문자열의 NUL 검사를 뺀다',
+    file: VALIDATION,
+    find: "          typeof value !== 'string' || !value.includes('\\u0000'),",
+    replace: '          true,',
+    test: API_TEST,
+    name: 'NUL이 든 제목',
+  },
+  {
+    id: 'S33',
+    adr: '0021',
+    what: '글자 수를 class-validator처럼 변형 선택자(U+FE0F)를 빼고 센다',
+    file: VALIDATION,
+    find: '          const length = [...value].length;',
+    replace:
+      "          const length = [...value.replace(/\\uFE0F/g, '')].length;",
+    test: API_TEST,
+    name: '코드 포인트로 100자를 넘는 제목',
+  },
+  {
+    id: 'S34',
+    adr: '0019',
+    what: 'body-parser 오류의 4xx 상태를 무시하고 500으로 답한다',
+    file: 'src/api/errors/problem-details.filter.ts',
+    find: '    const isRejectedByParser = parserStatus !== undefined;',
+    replace: '    const isRejectedByParser = false;',
+    test: API_TEST,
+    name: '본문이 너무 큰 요청은 413',
   },
 ];
