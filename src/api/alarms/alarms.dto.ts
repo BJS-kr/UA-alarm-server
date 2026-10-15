@@ -144,3 +144,21 @@ export class DeliveryListView {
   @ApiProperty({ type: [DeliveryView] }) items!: DeliveryView[];
   @ApiProperty({ nullable: true, type: String }) nextCursor!: string | null;
 }
+
+class FieldErrorView {
+  @ApiProperty() field!: string;
+  @ApiProperty() message!: string;
+}
+
+/** RFC 9457 Problem Details (ADR-0019). Content-Type은 application/problem+json이다. */
+export class ProblemView {
+  @ApiProperty({ example: '/problems/invalid-state', description: '에러 종류. 클라이언트는 이 값으로 분기한다' })
+  type!: string;
+  @ApiProperty({ example: '현재 상태에서 할 수 없는 요청' }) title!: string;
+  @ApiProperty({ example: 409 }) status!: number;
+  @ApiPropertyOptional() detail?: string;
+  @ApiProperty({ example: '/v1/alarms/0193.../send' }) instance!: string;
+  @ApiProperty({ description: '같은 값이 서버 로그에 남는다', example: '4bf92f3577b34da6a3ce929d0e0e4736' }) traceId!: string;
+  @ApiPropertyOptional({ type: [FieldErrorView], description: '입력 검증 실패(400)일 때 필드별 오류' }) errors?: FieldErrorView[];
+  @ApiPropertyOptional({ description: '상태 충돌(409)일 때 현재 상태' }) currentStatus?: string;
+}

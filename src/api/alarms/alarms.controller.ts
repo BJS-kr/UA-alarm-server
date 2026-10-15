@@ -3,6 +3,7 @@ import {
   ApiAcceptedResponse,
   ApiBadRequestResponse,
   ApiBearerAuth,
+  ApiExtraModels,
   ApiConflictResponse,
   ApiCreatedResponse,
   ApiNotFoundResponse,
@@ -10,6 +11,7 @@ import {
   ApiOperation,
   ApiTags,
   ApiUnauthorizedResponse,
+  getSchemaPath,
 } from '@nestjs/swagger';
 import type { Response } from 'express';
 import { badRequest } from '../errors/problem';
@@ -21,13 +23,18 @@ import {
   DeliveryListView,
   ListAlarmsQuery,
   ListDeliveriesQuery,
+  ProblemView,
 } from './alarms.dto';
 import { AlarmsService } from './alarms.service';
 
 const uuidParam = new ParseUUIDPipe({ exceptionFactory: () => badRequest('id는 UUID 형식이어야 한다') });
-const PROBLEM = { description: 'Problem Details (application/problem+json, ADR-0019)' };
+const PROBLEM = {
+  description: 'Problem Details (RFC 9457, ADR-0019)',
+  content: { 'application/problem+json': { schema: { $ref: getSchemaPath(ProblemView) } } },
+};
 
 @ApiTags('alarms')
+@ApiExtraModels(ProblemView)
 @ApiBearerAuth()
 @ApiUnauthorizedResponse(PROBLEM)
 @Controller('v1/alarms')
