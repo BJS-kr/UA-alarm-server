@@ -48,7 +48,7 @@ export function createApiRegistry(db: Db): Registry {
 
   new Gauge({
     name: 'alarm_oldest_in_flight_seconds',
-    help: '가장 오래 전송 중인 건의 나이. 1분을 넘으면 멈춘 워커가 있다',
+    help: '가장 오래 전송 중인 건의 나이. 기한(30초)이 지난 건은 2초 안에 넘겨받혀야 하므로, 1분을 넘으면 넘겨받기가 돌지 않는다',
     registers: [registry],
     async collect() {
       this.set(await repository.oldestInFlightSeconds());

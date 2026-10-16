@@ -439,7 +439,7 @@ api와 worker는 서로를 호출하지 않고 DB로만 이어집니다. 대량 
 | `alarm_duplicates_detected_total` 증가 | 같은 수신자에게 두 번 나간 것이 확인됐다. 즉시 확인 |
 | `alarm_rate_limit_pauses_total`가 5분 넘게 계속 증가 | 처리량 제한 설정이 외부 서비스와 맞지 않는다 |
 | `alarm_breaker_trips_total`가 5분 넘게 계속 증가 | 외부 발송 서비스 장애 |
-| `alarm_oldest_in_flight_seconds` > 60 | 멈춘 워커가 있다 |
+| `alarm_oldest_in_flight_seconds` > 60 | 넘겨받기가 돌지 않는다(살아 있는 워커가 없거나 모두 멈췄다) |
 | `alarm_pending_oldest_due_seconds{priority="0"}` > 10 | 긴급 알림이 밀리고 있다 |
 
 ## 기술 선택
