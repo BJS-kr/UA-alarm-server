@@ -21,8 +21,6 @@ export interface WorkerRuntimeOptions {
   config: AppConfig;
   workerId: number;
   logger: LoggerService;
-  /** 계속 돌면 정확성이 깨지는 상황(결과를 기록할 수 없음). 프로세스를 끝내고, 그 건은 기한이 지나 넘겨받힌다 (ADR-0007). */
-  onFatal: (reason: string, error?: unknown) => never;
 }
 
 /**
@@ -60,7 +58,7 @@ export class WorkerRuntime {
   private readonly housekeeper: Housekeeper;
 
   constructor(private readonly options: WorkerRuntimeOptions) {
-    const { config, workerId, logger, onFatal } = options;
+    const { config, workerId, logger } = options;
 
     this.workerId = workerId;
     const onDbError = (error: Error) =>
@@ -106,7 +104,6 @@ export class WorkerRuntime {
       breaker,
       metrics: this.metrics,
       logger,
-      onFatal,
     });
     this.reconciler = new Reconciler(
       config,
@@ -114,7 +111,6 @@ export class WorkerRuntime {
       this.client,
       this.metrics,
       logger,
-      onFatal,
     );
     this.expander = new Expander(
       config,
@@ -124,7 +120,6 @@ export class WorkerRuntime {
       this.client,
       this.metrics,
       logger,
-      onFatal,
     );
     this.canceller = new Canceller(
       config,
@@ -133,7 +128,6 @@ export class WorkerRuntime {
       workerId,
       this.metrics,
       logger,
-      onFatal,
     );
     this.housekeeper = new Housekeeper(
       config,

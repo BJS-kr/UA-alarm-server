@@ -17,16 +17,19 @@ const silent = {
 };
 
 /** DB 대신 호출만 기록하는 토큰 버킷 */
-function stubBucket() {
+function stubBucket(tripped = true) {
   const calls: string[] = [];
   const bucket = {
     tripBreaker: async () => {
       calls.push('trip');
 
-      return { tripped: true, pauseMs: 100, streak: 0 };
+      return { tripped, pauseMs: 100, streak: 0 };
     },
     closeBreaker: async () => {
       calls.push('close');
+    },
+    releaseProbe: async () => {
+      calls.push('release');
     },
   } as unknown as TokenBucket;
 
@@ -92,6 +95,15 @@ describe('서킷 브레이커 (ADR-0014)', () => {
     expect(calls).toEqual(['trip', 'close']);
     expect(breaker.isOpen()).toBe(false);
     expect(probes).toEqual(['still_failing', 'recovered']);
+  });
+
+  it('시험 발송이 실패했는데 429 정지 중이라 다시 열지 못하면, 시험 토큰을 돌려준다', async () => {
+    const { bucket, calls } = stubBucket(false);
+    const breaker = breakerWith(bucket);
+
+    breaker.observe(true);
+    await breaker.record(failure, monotonicMs(), true);
+    expect(calls).toEqual(['trip', 'release']);
   });
 
   it('닫히면 판단 창을 비워, 장애 전의 실패로 다시 열지 않는다', async () => {

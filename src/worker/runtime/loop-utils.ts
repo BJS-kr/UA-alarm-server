@@ -25,15 +25,11 @@ export function monotonicMs(): number {
 }
 
 /**
- * DB 쓰기를 간격을 늘려 가며 재시도한다. 끝내 실패하면 onGiveUp을 부른다.
- * 결과를 기록하지 못한 채 계속 돌면 그 건이 살아 있는 워커 명의로 IN_FLIGHT에 영원히 남으므로,
- * 프로세스를 끝내 잠금을 풀고 넘겨받기 경로로 보낸다 (ADR-0007의 두 번째 출구).
+ * DB 쓰기를 간격을 늘려 가며 재시도한다. 끝내 실패하면 마지막 오류를 던진다.
+ * 프로세스는 끝내지 않는다. 기록하지 못한 건은 기한이 지나 다른 워커가 넘겨받고(ADR-0004),
+ * 오류는 루프 꼭대기가 받아 로그와 메트릭으로 남긴다(ADR-0039).
  */
-export async function durable<T>(
-  fn: () => Promise<T>,
-  onGiveUp: (error: unknown) => never,
-  tries = 6,
-): Promise<T> {
+export async function durable<T>(fn: () => Promise<T>, tries = 6): Promise<T> {
   let delay = 250;
 
   for (let attempt = 1; ; attempt++) {
@@ -41,7 +37,7 @@ export async function durable<T>(
       return await fn();
     } catch (error) {
       const isLastAttempt = attempt >= tries;
-      if (isLastAttempt) onGiveUp(error);
+      if (isLastAttempt) throw error;
       await sleep(delay);
       delay = Math.min(delay * 2, 5_000);
     }

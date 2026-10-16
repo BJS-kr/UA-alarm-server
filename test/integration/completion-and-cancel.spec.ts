@@ -17,10 +17,6 @@ import {
 } from './support/fixtures';
 import { createTestDatabase, TestDatabase } from './support/test-database';
 
-const neverFatal = (reason: string): never => {
-  throw new Error(reason);
-};
-
 describe('완료 판정: 마지막 기록이 같은 트랜잭션에서 판정한다 (ADR-0018)', () => {
   let database: TestDatabase;
 
@@ -212,13 +208,44 @@ describe('취소 (ADR-0017)', () => {
       workerId,
       new WorkerMetrics(),
       new CapturingLogger(),
-      neverFatal,
     );
 
     canceller.start();
     await new Promise((r) => setTimeout(r, 300));
     await canceller.stop();
   }
+
+  it('정리 도중 멈춘 담당의 정리는 기한이 지난 뒤 다른 워커가 이어 받는다 (ADR-0004)', async () => {
+    const alarm = await insertAlarm(database.db, {
+      type: 'BULK',
+      status: 'CANCELING',
+      recipients: ['c1', 'c2'],
+    });
+
+    await database.db.execute(sql`
+      UPDATE alarms SET cleanup_owner = 999, cleanup_lease_until = clock_timestamp() - interval '1 second'
+       WHERE id = ${alarm.id}`);
+    await runCleanup(5);
+
+    expect(await alarmStatus(database.db, alarm.id)).toBe('CANCELED');
+  });
+
+  it('기한이 남은 취소 정리는 다른 워커가 맡지 않는다 (ADR-0004)', async () => {
+    const alarm = await insertAlarm(database.db, {
+      type: 'BULK',
+      status: 'CANCELING',
+      recipients: ['c1'],
+    });
+
+    await database.db.execute(sql`
+      UPDATE alarms SET cleanup_owner = 999, cleanup_lease_until = clock_timestamp() + interval '1 minute'
+       WHERE id = ${alarm.id}`);
+    await runCleanup(5);
+
+    expect(await deliveryStatuses(database.db, alarm.id)).toEqual({
+      c1: 'PENDING',
+    });
+  });
 
   it('정리는 대기 건만 CANCELED로 바꾸고, 보내는 중인 건이 끝나면 알림이 CANCELED가 된다', async () => {
     const alarm = await insertAlarm(database.db, {

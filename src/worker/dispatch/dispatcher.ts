@@ -29,7 +29,6 @@ export interface DispatcherDeps {
   breaker: SendBreaker;
   metrics: WorkerMetrics;
   logger: LoggerService;
-  onFatal: (reason: string, error?: unknown) => never;
 }
 
 /**
@@ -241,7 +240,7 @@ export class Dispatcher {
 
     this.logDecision(delivery, result, decision);
 
-    const outcome = await this.persist(() =>
+    const outcome = await durable(() =>
       deliveries.recordSend(delivery, decision, config.RECONCILE_DELAY_MS),
     );
     const isApplied = outcome.applied === true;
@@ -285,7 +284,7 @@ export class Dispatcher {
     const isDuplicate = lookup.kind === 'ok' && lookup.messages.length > 1;
     if (isDuplicate) {
       metrics.duplicates.inc();
-      await this.persist(() => deliveries.markDuplicate(delivery.id));
+      await durable(() => deliveries.markDuplicate(delivery.id));
       logger.error('Duplicate send confirmed', {
         recipientId: delivery.recipientId,
         messages: lookup.messages.length,
@@ -365,7 +364,7 @@ export class Dispatcher {
     isProbe: boolean,
   ): Promise<void> {
     if (isProbe) await this.releaseProbe();
-    await this.persist(() => this.deps.deliveries.releaseUnsent(delivery));
+    await durable(() => this.deps.deliveries.releaseUnsent(delivery));
   }
 
   /** 돌려주지 못해도 시험 발송의 기한이 지나면 다른 워커가 다시 시험하므로, 실패는 기록만 한다. */
@@ -375,11 +374,5 @@ export class Dispatcher {
       .catch((e: unknown) =>
         this.deps.logger.error('Could not release the probe token', e as Error),
       );
-  }
-
-  private persist<T>(fn: () => Promise<T>): Promise<T> {
-    return durable(fn, (error) =>
-      this.deps.onFatal('Could not record a send result', error),
-    );
   }
 }

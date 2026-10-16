@@ -60,7 +60,11 @@ export class SendBreaker {
   private async recordProbe(isFailure: boolean): Promise<void> {
     if (isFailure) {
       this.onProbe('still_failing');
-      await this.trip('The probe send failed, the outage continues');
+      const isReopened = await this.trip(
+        'The probe send failed, the outage continues',
+      );
+      // 429 정지 중이라 다시 열지 못했다. 시험 토큰을 돌려줘야 정지가 풀리자마자 다시 시험한다.
+      if (!isReopened) await this.bucket.releaseProbe();
 
       return;
     }
@@ -71,16 +75,19 @@ export class SendBreaker {
     this.logger.log('The probe send succeeded, resuming all sending');
   }
 
-  private async trip(reason: string): Promise<void> {
+  /** 브레이커를 열었으면 true. 이미 정지 중이면 열지 않는다. */
+  private async trip(reason: string): Promise<boolean> {
     const trip = await this.bucket.tripBreaker(this.options);
     const isTripped = trip.tripped;
-    if (!isTripped) return;
+    if (!isTripped) return false;
     this.markOpened();
     this.onTrip();
     this.logger.error(`${reason}, pausing all sending`, {
       pauseMs: trip.pauseMs,
       streak: trip.streak,
     });
+
+    return true;
   }
 
   private markOpened(): void {

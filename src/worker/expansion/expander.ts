@@ -11,7 +11,7 @@ import {
 import { withLogContext } from '../../shared/logging/log-context';
 import { withAlarmLock } from '../completion/alarm-lock.repository';
 import { WorkerMetrics } from '../metrics/worker-metrics';
-import { durable, sleep } from '../runtime/loop-utils';
+import { durable } from '../runtime/loop-utils';
 import { PollingLoop, Tick } from '../runtime/polling-loop';
 import { ExpansionRepository, ExpansionTask } from './expansion.repository';
 
@@ -34,7 +34,6 @@ export class Expander {
     private readonly client: ExternalApiClient,
     private readonly metrics: WorkerMetrics,
     private readonly logger: LoggerService,
-    private readonly onFatal: (reason: string, error?: unknown) => never,
   ) {
     this.loop = new PollingLoop(
       {
@@ -122,7 +121,7 @@ export class Expander {
           delayMs + this.config.TASK_LEASE_MS,
         );
         if (!isStillMineWhileWaiting) return;
-        await sleep(delayMs);
+        await this.loop.pause(delayMs);
         continue;
       }
 
@@ -154,29 +153,27 @@ export class Expander {
     pageCursor: string | null,
     page: UsersPage,
   ): Promise<PageStep> {
-    const { result: step, finished } = await durable(
-      () =>
-        withAlarmLock(
-          this.db,
-          task.alarmId,
-          async (tx, alarm): Promise<PageStep> => {
-            const isSending = alarm.status === AlarmStatus.SENDING;
-            const isMine = alarm.expansionOwner === this.workerId;
-            const isExpectedPage = alarm.expansionCursor === pageCursor;
-            // 취소됐거나, 넘겨받혔거나, 이 페이지가 이미 들어갔으면 멈춘다.
-            const isMyNextPage = isSending && isMine && isExpectedPage;
-            if (!isMyNextPage) return 'stop';
-            await this.repository.savePage(
-              tx,
-              task,
-              page.users.map((user) => user.id),
-              page.nextCursor,
-            );
+    const { result: step, finished } = await durable(() =>
+      withAlarmLock(
+        this.db,
+        task.alarmId,
+        async (tx, alarm): Promise<PageStep> => {
+          const isSending = alarm.status === AlarmStatus.SENDING;
+          const isMine = alarm.expansionOwner === this.workerId;
+          const isExpectedPage = alarm.expansionCursor === pageCursor;
+          // 취소됐거나, 넘겨받혔거나, 이 페이지가 이미 들어갔으면 멈춘다.
+          const isMyNextPage = isSending && isMine && isExpectedPage;
+          if (!isMyNextPage) return 'stop';
+          await this.repository.savePage(
+            tx,
+            task,
+            page.users.map((user) => user.id),
+            page.nextCursor,
+          );
 
-            return page.nextCursor === null ? 'done' : 'continue';
-          },
-        ),
-      (error) => this.onFatal('Could not record an expansion page', error),
+          return page.nextCursor === null ? 'done' : 'continue';
+        },
+      ),
     );
     const isSaved = step !== 'stop';
     if (isSaved) this.metrics.expansionPages.inc();

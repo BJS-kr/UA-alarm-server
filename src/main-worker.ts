@@ -4,10 +4,7 @@ import { describeConfig, loadConfig } from './shared/config/app-config';
 import { ManagementServer } from './shared/health/management-server';
 import { AppLogger } from './shared/logging/app-logger';
 import { logContext } from './shared/logging/log-context';
-import {
-  installProcessGuardrail,
-  toError,
-} from './shared/runtime/process-guardrail';
+import { installProcessGuardrail } from './shared/runtime/process-guardrail';
 import { newWorkerId } from './worker/lifecycle/worker-identity';
 import { WorkerRuntime } from './worker/runtime/worker-runtime';
 import { WorkerModule } from './worker/worker.module';
@@ -19,19 +16,8 @@ async function bootstrap(workerId: number): Promise<void> {
   installProcessGuardrail(logger);
   logger.log('Configuration applied', describeConfig(config));
 
-  // 계속 돌면 정확성이 깨지는 상황(결과를 기록할 수 없음)에서만 일부러 끝낸다 (ADR-0007, 0039).
-  // 쥐고 있던 건은 기한이 지나 다른 워커가 넘겨받는다(ADR-0004). restart 정책이 새 ID로 다시 띄운다.
-  const onFatal = (reason: string, error?: unknown): never => {
-    // 원인 오류가 없을 때 undefined를 넘기면 빈 로그 줄이 하나 더 찍힌다.
-    const isCauseKnown = error !== undefined;
-    if (isCauseKnown) {
-      logger.fatal(reason, toError(error));
-    } else logger.fatal(reason);
-    process.exit(1);
-  };
-
   const app = await NestFactory.createApplicationContext(
-    WorkerModule.forRoot(config, workerId, logger, onFatal),
+    WorkerModule.forRoot(config, workerId, logger),
     { logger },
   );
 

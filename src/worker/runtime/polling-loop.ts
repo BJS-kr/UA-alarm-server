@@ -1,5 +1,5 @@
 import { LoggerService } from '@nestjs/common';
-import { monotonicMs, sleep } from './loop-utils';
+import { monotonicMs } from './loop-utils';
 
 /**
  * 한 바퀴의 결과. 'busy'면 쉬지 않고 다음 바퀴를 돌고, 'idle'이면 idleMs를, { sleepMs }면 그만큼 쉰다.
@@ -23,6 +23,7 @@ export class PollingLoop {
   private isStopRequested = false;
   private done: Promise<void> = Promise.resolve();
   private lastTickAt = monotonicMs();
+  private wake?: () => void;
 
   constructor(
     private readonly options: PollingLoopOptions,
@@ -36,7 +37,25 @@ export class PollingLoop {
   /** 돌던 바퀴를 마치고 멈춘다. */
   async stop(): Promise<void> {
     this.isStopRequested = true;
+    this.wake?.();
     await this.done;
+  }
+
+  /**
+   * ms만큼 쉬되, 멈추라는 요청이 오면 바로 깬다. 바퀴 안에서 오래 쉬는 모듈(펼치기의 재시도 대기)도 이것을 쓴다.
+   * 그냥 쉬면 정상 종료가 그 대기를 다 기다려 유예 시간을 넘긴다 (ADR-0007).
+   */
+  pause(ms: number): Promise<void> {
+    if (this.isStopRequested) return Promise.resolve();
+
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+
+      this.wake = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+    });
   }
 
   get isStopping(): boolean {
@@ -53,7 +72,7 @@ export class PollingLoop {
       this.lastTickAt = monotonicMs();
       const pauseMs = this.pauseAfter(await this.safeTick());
       const isBusy = pauseMs === 0;
-      if (!isBusy) await sleep(pauseMs);
+      if (!isBusy) await this.pause(pauseMs);
     }
   }
 

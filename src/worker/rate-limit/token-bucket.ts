@@ -5,8 +5,6 @@ import {
   RateLimiterRepository,
 } from './rate-limiter.repository';
 
-export type Grant = AcquireResult;
-
 export interface BreakerOptions {
   pauseMinMs: number;
   pauseMaxMs: number;
@@ -33,7 +31,7 @@ export class TokenBucket {
     this.repository = new RateLimiterRepository(db);
   }
 
-  acquire(requested: number): Promise<Grant> {
+  acquire(requested: number): Promise<AcquireResult> {
     return this.repository.acquire(
       requested,
       this.ratePerSec,

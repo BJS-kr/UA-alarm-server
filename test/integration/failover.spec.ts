@@ -392,9 +392,6 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
       } as unknown as SendBreaker,
       metrics: new WorkerMetrics(),
       logger: new CapturingLogger(),
-      onFatal: (reason) => {
-        throw new Error(reason);
-      },
     });
 
     dispatcher.start();

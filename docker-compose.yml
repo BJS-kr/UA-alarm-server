@@ -59,9 +59,11 @@ services:
     environment:
       <<: *app-env
       PORT: '3000'
-      API_KEY: dev-api-key
+      # 개발용 기본값이다. 다른 곳에 띄울 때는 API_KEY 환경변수로 바꾼다 (ADR-0033).
+      API_KEY: ${API_KEY:-dev-api-key}
     ports:
-      - '3000:3000'
+      # 이 머신에서만 받는다. 같은 네트워크의 다른 사람이 개발용 키로 발송하지 못하게 한다.
+      - '127.0.0.1:3000:3000'
     healthcheck:
       test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:9100/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 5s
@@ -104,7 +106,7 @@ services:
     environment:
       API_BASE_URL: http://api:3000
       MOCK_BASE_URL: http://mock:4000
-      API_KEY: dev-api-key
+      API_KEY: ${API_KEY:-dev-api-key}
 
   # docker compose --profile monitoring up (ADR-0027)
   prometheus:
@@ -113,7 +115,7 @@ services:
     volumes:
       - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
-      - '9090:9090'
+      - '127.0.0.1:9090:9090'
     depends_on:
       - api
 

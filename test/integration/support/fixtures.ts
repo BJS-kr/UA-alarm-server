@@ -67,7 +67,6 @@ export class CapturingLogger implements LoggerService {
 export interface RunningWorker {
   runtime: WorkerRuntime;
   logger: CapturingLogger;
-  fatal: string[];
 }
 
 /** 같은 프로세스 안에서 DB 연결과 워커 ID를 따로 가진 워커 인스턴스를 띄운다 (ADR-0035). */
@@ -76,20 +75,15 @@ export async function startWorker(
   workerId = newWorkerId(),
 ): Promise<RunningWorker> {
   const logger = new CapturingLogger();
-  const fatal: string[] = [];
   const runtime = new WorkerRuntime({
     config,
     workerId,
     logger,
-    onFatal: (reason) => {
-      fatal.push(reason);
-      throw new Error(`fatal: ${reason}`);
-    },
   });
 
   await runtime.start();
 
-  return { runtime, logger, fatal };
+  return { runtime, logger };
 }
 
 export async function waitFor<T>(

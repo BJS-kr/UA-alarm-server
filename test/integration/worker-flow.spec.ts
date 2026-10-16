@@ -95,7 +95,16 @@ describe('워커 전체 흐름 (ADR-0002, 0006, 0009, 0011, 0014)', () => {
       );
     }
 
-    expect(workers.reduce((sum, w) => sum + w.fatal.length, 0)).toBe(0);
+    // 루프 꼭대기까지 올라온 예상하지 못한 오류가 없다 (ADR-0039).
+    let loopErrors = 0;
+
+    for (const worker of workers) {
+      const { values } = await worker.runtime.metrics.loopErrors.get();
+
+      loopErrors += values.reduce((sum, v) => sum + v.value, 0);
+    }
+
+    expect(loopErrors).toBe(0);
   });
 
   it('대량 발송 중에 시작한 긴급 알림이 먼저 나간다', async () => {

@@ -31,7 +31,6 @@ export class WorkerModule {
     config: AppConfig,
     workerId: number,
     logger: LoggerService,
-    onFatal: (reason: string, error?: unknown) => never,
   ): DynamicModule {
     return {
       module: WorkerModule,
@@ -52,7 +51,7 @@ export class WorkerModule {
           provide: WorkerRuntime,
           inject: [AppConfig],
           useFactory: (appConfig: AppConfig) =>
-            new WorkerRuntime({ config: appConfig, workerId, logger, onFatal }),
+            new WorkerRuntime({ config: appConfig, workerId, logger }),
         },
         WorkerLifecycle,
       ],

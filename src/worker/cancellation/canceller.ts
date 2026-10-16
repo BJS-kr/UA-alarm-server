@@ -23,7 +23,6 @@ export class Canceller {
     private readonly workerId: number,
     metrics: WorkerMetrics,
     private readonly logger: LoggerService,
-    private readonly onFatal: (reason: string, error?: unknown) => never,
   ) {
     this.loop = new PollingLoop(
       {
@@ -54,17 +53,15 @@ export class Canceller {
   }
 
   private async cleanUp(alarmId: string): Promise<void> {
-    const { result: canceledDeliveries, finished } = await durable(
-      () =>
-        withAlarmLock(this.db, alarmId, async (tx, alarm) => {
-          const isCanceling = alarm.status === AlarmStatus.CANCELING;
-          const isMine = alarm.cleanupOwner === this.workerId;
-          const isMyCleanup = isCanceling && isMine;
-          if (!isMyCleanup) return 0;
+    const { result: canceledDeliveries, finished } = await durable(() =>
+      withAlarmLock(this.db, alarmId, async (tx, alarm) => {
+        const isCanceling = alarm.status === AlarmStatus.CANCELING;
+        const isMine = alarm.cleanupOwner === this.workerId;
+        const isMyCleanup = isCanceling && isMine;
+        if (!isMyCleanup) return 0;
 
-          return this.repository.cancelPending(tx, alarmId);
-        }),
-      (error) => this.onFatal('Could not record the cancel cleanup', error),
+        return this.repository.cancelPending(tx, alarmId);
+      }),
     );
 
     this.logger.log('Cancel cleanup finished', {

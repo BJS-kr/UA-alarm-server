@@ -30,7 +30,6 @@ export class Reconciler {
     private readonly client: ExternalApiClient,
     private readonly metrics: WorkerMetrics,
     private readonly logger: LoggerService,
-    private readonly onFatal: (reason: string, error?: unknown) => never,
   ) {
     this.loop = new PollingLoop(
       {
@@ -75,17 +74,15 @@ export class Reconciler {
           clientRefOf(item.alarmId, item.recipientId),
           this.config.LOOKUP_TIMEOUT_MS,
         );
-        const { decision, outcome } = await durable(
-          () =>
-            this.deliveries.recordReconcile(item, (isAlarmCanceling) =>
-              decideAfterLookup(
-                lookup,
-                isAlarmCanceling,
-                item,
-                retryOptions(this.config),
-              ),
+        const { decision, outcome } = await durable(() =>
+          this.deliveries.recordReconcile(item, (isAlarmCanceling) =>
+            decideAfterLookup(
+              lookup,
+              isAlarmCanceling,
+              item,
+              retryOptions(this.config),
             ),
-          (error) => this.onFatal('Could not record a reconcile result', error),
+          ),
         );
 
         this.metrics.reconciles.inc({ result: decision.kind });

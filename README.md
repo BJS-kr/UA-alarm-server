@@ -17,7 +17,7 @@ postgres, mock(외부 발송 API), migrate(마이그레이션 후 종료), api, 
 | 항목 | 값 |
 | --- | --- |
 | API | http://localhost:3000 |
-| 인증 | `Authorization: Bearer dev-api-key` |
+| 인증 | `Authorization: Bearer dev-api-key` (개발용 기본값. `API_KEY` 환경변수로 바꿉니다. 포트는 이 머신에서만 받습니다) |
 | API 문서 (Swagger UI) | http://localhost:3000/docs |
 | OpenAPI 3.0 문서 | http://localhost:3000/docs/openapi.json, 서버 없이 보려면 [docs/openapi.json](docs/openapi.json) |
 
@@ -57,7 +57,7 @@ docker compose --profile test run --rm test npm run test:mutation
 docker compose --profile test run --rm test npm run test:sabotage
 ```
 
-끝단 테스트. 실제 mock 이미지(사용자 2000명)에 워커 3대를 띄우고, 대량·긴급 알림을 보내는 도중 워커 1대는 `docker stop`으로 정상 종료하고(종료 로그까지 확인) 다른 1대는 `docker kill`로 죽입니다. 끝난 뒤 우리 DB와 mock의 평가용 집계(`/_admin/stats`) 양쪽으로 수신자마다 외부 기록이 정확히 한 건인지, 사용자 수만큼 Delivery가 만들어졌는지, 긴급 알림이 대량 알림 뒤에 줄 서지 않았는지 확인합니다. 끝으로 남은 워커로 대량 알림을 보내다 취소하고, CANCELED 뒤에 외부 기록이 늘지 않는지 봅니다. `docker stop`과 `docker kill`로 멈춘 컨테이너는 Docker가 사람이 멈춘 것으로 보아 `restart: unless-stopped`로도 다시 띄우지 않습니다(실행 후 재시작 0회). 그래서 이 테스트는 남은 워커가 넘겨받는 경로를 봅니다. 프로세스가 비정상 종료하면(결과를 기록할 수 없어 스스로 끝냄, 크래시, OOM) 다시 띄웁니다. 이 스크립트는 기존 compose 스택과 볼륨을 지우고 새로 띄웁니다.
+끝단 테스트. 실제 mock 이미지(사용자 2000명)에 워커 3대를 띄우고, 대량·긴급 알림을 보내는 도중 워커 1대는 `docker stop`으로 정상 종료하고(종료 로그까지 확인) 다른 1대는 `docker kill`로 죽입니다. 끝난 뒤 우리 DB와 mock의 평가용 집계(`/_admin/stats`) 양쪽으로 수신자마다 외부 기록이 정확히 한 건인지, 사용자 수만큼 Delivery가 만들어졌는지, 긴급 알림이 대량 알림 뒤에 줄 서지 않았는지 확인합니다. 끝으로 남은 워커로 대량 알림을 보내다 취소하고, CANCELED 뒤에 외부 기록이 늘지 않는지 봅니다. `docker stop`과 `docker kill`로 멈춘 컨테이너는 Docker가 사람이 멈춘 것으로 보아 `restart: unless-stopped`로도 다시 띄우지 않습니다(실행 후 재시작 0회). 그래서 이 테스트는 남은 워커가 넘겨받는 경로를 봅니다. 프로세스가 비정상 종료하면(크래시, OOM) 다시 띄웁니다. 이 스크립트는 기존 compose 스택과 볼륨을 지우고 새로 띄웁니다.
 
 ```bash
 bash scripts/e2e.sh
@@ -403,7 +403,7 @@ api와 worker는 서로를 호출하지 않고 DB로만 이어집니다. 대량 
 워커가 내려가는 이유는 여러 가지지만, 쥐고 있던 건이 처리되는 출구는 둘뿐입니다(ADR-0007).
 
 - 정상 종료(SIGTERM, 배포·축소): 새 건을 꺼내지 않고, 이미 보낸 요청의 응답을 기다려 기록한 뒤, 꺼냈지만 보내지 않은 건을 대기로 되돌리고, 펼치기 담당도 내려놓고 종료합니다. 다른 워커가 기한을 기다리지 않고 바로 이어 갑니다. 신호가 Node까지 닿도록 exec 형식 `CMD`와 `init: true`를 쓰고, 마무리 시간을 위해 `stop_grace_period: 30s`를 둡니다.
-- 그 밖의 모든 경우(크래시, OOM, `docker kill`, 결과를 기록할 수 없어 스스로 끝냄): 쥐고 있던 건은 기한이 지난 뒤 다른 워커가 넘겨받습니다. 펼치기 도중이었다면 기한이 지난 뒤 저장된 커서부터 이어 갑니다.
+- 그 밖의 모든 경우(크래시, OOM, `docker kill`, 멈춤, DB와 갈라짐): 쥐고 있던 건은 기한이 지난 뒤 다른 워커가 넘겨받습니다. 펼치기 도중이었다면 기한이 지난 뒤 저장된 커서부터 이어 갑니다.
 
 ### 실패 처리
 
@@ -426,7 +426,7 @@ api와 worker는 서로를 호출하지 않고 DB로만 이어집니다. 대량 
 
 ### 운영
 
-- 예상하지 못한 오류(ADR-0039): 서버가 기록 없이 죽지 않게, 오류가 올라오는 꼭대기에서 한 번씩 받습니다. 프로세스 안전망(`unhandledRejection`, `uncaughtException`), HTTP 전역 예외 필터, worker의 공통 작업 루프(`PollingLoop`)가 로그와 메트릭(`alarm_unhandled_errors_total`, `alarm_loop_errors_total`)을 남기고 계속 돕니다. api는 DB 연결 대기(5초)와 쿼리(30초)에 한도를 두어, 요청이 응답 없이 멈추지 않고 503으로 끝납니다. 일부러 끝내는 경우는 worker가 결과를 끝내 기록하지 못했을 때뿐이고, 사유를 fatal 로그에 남깁니다.
+- 예상하지 못한 오류(ADR-0039): 서버가 기록 없이 죽지 않게, 오류가 올라오는 꼭대기에서 한 번씩 받습니다. 프로세스 안전망(`unhandledRejection`, `uncaughtException`), HTTP 전역 예외 필터, worker의 공통 작업 루프(`PollingLoop`)가 로그와 메트릭(`alarm_unhandled_errors_total`, `alarm_loop_errors_total`)을 남기고 계속 돕니다. api는 DB 연결 대기(5초)와 쿼리(30초)에 한도를 두어, 요청이 응답 없이 멈추지 않고 503으로 끝납니다. 일부러 끝내는 경우는 시작하지 못했을 때(설정 오류 등)뿐입니다. 결과를 DB에 기록하지 못해도 끝내지 않습니다. 그 건은 기한이 지나 다른 워커가 넘겨받습니다.
 - 헬스체크(ADR-0026): api의 `/health/ready`는 DB 확인을 포함하고, `/health/live`는 포함하지 않습니다. DB가 잠깐 죽었을 때 모든 api가 재시작되는 것을 막기 위해서입니다. worker의 `/health/live`는 HTTP 응답이 아니라 작업 루프가 최근 30초 안에 돌았는지를 봅니다.
 - 로그(ADR-0028): 표준 출력 JSON이고, 모든 줄에 traceId(요청에 `traceparent`가 있으면 그 값)와 alarmId 등이 붙습니다. info에는 성공 건을 남기지 않고, `LOG_LEVEL=debug`로 켜면 발송 시도마다 한 줄씩 생략 없이 남깁니다. 본문의 네 자리 이상 숫자, 전화번호, 비밀 키, 접속 주소의 비밀번호는 로거 한 곳에서 마스킹합니다.
 - 설정(ADR-0030): 모두 환경변수이고 기동할 때 검증합니다. 값 하나뿐 아니라 값 사이의 관계(응답 한도 10초 < 발송 기한 30초 등)가 어긋나도 시작하지 않습니다.
