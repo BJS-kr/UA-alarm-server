@@ -7,20 +7,20 @@ import {
   Registry,
 } from 'prom-client';
 
-/** 워커 메모리 안에서 일어나는 일의 메트릭 (ADR-0027). DB에서 세는 값은 api가 낸다. */
+/** 워커 프로세스 내부 동작 메트릭 (ADR-0027). DB 상태 집계 메트릭은 api 프로세스가 노출한다. */
 export class WorkerMetrics {
   readonly registry = new Registry();
 
   readonly sendRequests = new Counter({
     name: 'alarm_send_requests_total',
-    help: '외부 발송 요청 결과별 건수',
+    help: '외부 발송 API 호출 결과별 누적 건수',
     labelNames: ['priority', 'result'] as const,
     registers: [this.registry],
   });
 
   readonly sendDuration = new Histogram({
     name: 'alarm_send_duration_seconds',
-    help: '외부 발송 요청 응답 시간',
+    help: '외부 발송 API 요청 소요 시간(초)',
     labelNames: ['priority'] as const,
     buckets: [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
     registers: [this.registry],
@@ -28,84 +28,84 @@ export class WorkerMetrics {
 
   readonly inFlight = new Gauge({
     name: 'alarm_send_in_flight',
-    help: '이 워커에서 응답을 기다리는 발송 요청 수',
+    help: '현재 워커에서 진행 중인 외부 발송 요청 수',
     registers: [this.registry],
   });
 
   readonly urgentDispatchLatency = new Histogram({
     name: 'alarm_urgent_dispatch_latency_seconds',
-    help: '긴급 알림 발송 시작부터 외부 접수까지 걸린 시간',
+    help: '긴급 알림 발송 시작(started_at)부터 외부 API 접수(sent_at)까지 소요 시간(초)',
     buckets: [0.1, 0.25, 0.5, 1, 2, 5, 10, 30],
     registers: [this.registry],
   });
 
   readonly reconciles = new Counter({
     name: 'alarm_reconcile_total',
-    help: '결과 확인 결과별 건수',
+    help: '결과 미확정(UNCONFIRMED) 건의 발송 내역 조회(상태 확정) 결과별 건수',
     labelNames: ['result'] as const,
     registers: [this.registry],
   });
 
   readonly duplicates = new Counter({
     name: 'alarm_duplicates_detected_total',
-    help: '외부 기록이 2건 이상으로 확인된 중복 발송. 1 이상이면 즉시 확인한다',
+    help: '외부 발송 내역 조회에서 동일 멱등 키로 2건 이상 확인된 중복 발송 건수',
     registers: [this.registry],
   });
 
   readonly fencedWrites = new Counter({
     name: 'alarm_fenced_writes_total',
-    help: '넘겨받힌 뒤 늦게 도착해 거부된 결과 기록',
+    help: '리스 만료 회수 이후 펜싱 토큰(attempt) 불일치로 거부된 지연 결과 기록 횟수',
     registers: [this.registry],
   });
 
   readonly takeovers = new Counter({
     name: 'alarm_takeovers_total',
-    help: '기한이 지나도록 결과가 기록되지 않아 넘겨받은 Delivery 수',
+    help: '리스 만료(lease_until 경과)로 회수되어 UNCONFIRMED로 전이된 Delivery 건수',
     registers: [this.registry],
   });
 
   readonly breakerTrips = new Counter({
     name: 'alarm_breaker_trips_total',
-    help: '서킷 브레이커 발동 횟수',
+    help: '서킷 브레이커 OPEN 전이 횟수',
     registers: [this.registry],
   });
 
   readonly tokenRequests = new Counter({
     name: 'alarm_token_requests_total',
-    help: '토큰 버킷 행에 토큰을 요청한 횟수. empty는 0개를 받은 요청이다. 이 행의 갱신 부하가 곧 이 값이다',
+    help: 'DB 토큰 버킷 차감 요청 횟수 (result=granted|empty)',
     labelNames: ['result'] as const,
     registers: [this.registry],
   });
 
   readonly breakerProbes = new Counter({
     name: 'alarm_breaker_probes_total',
-    help: '브레이커가 열린 뒤의 시험 발송 결과. recovered면 닫혔고, still_failing이면 다시 열렸다',
+    help: '서킷 브레이커 프로브(단건 시험 발송) 결과별 건수 (recovered | still_failing)',
     labelNames: ['result'] as const,
     registers: [this.registry],
   });
 
   readonly rateLimitPauses = new Counter({
     name: 'alarm_rate_limit_pauses_total',
-    help: '429로 전체를 멈춘 횟수',
+    help: '외부 API 429 응답으로 인한 전역 일시 정지 횟수',
     registers: [this.registry],
   });
 
   readonly expansionPages = new Counter({
     name: 'alarm_expansion_pages_total',
-    help: '펼치기로 커밋한 사용자 페이지 수',
+    help: '수신자 확장(Expansion)으로 커밋된 사용자 페이지 수',
     registers: [this.registry],
   });
 
   readonly expansionFetchFailures = new Counter({
     name: 'alarm_expansion_fetch_failures_total',
-    help: '펼치기의 사용자 조회 실패. transient는 재시도하고, permanent는 알림을 취소 처리했다',
+    help: '수신자 확장 중 외부 사용자 목록 조회 실패 횟수 (transient | permanent)',
     labelNames: ['kind'] as const,
     registers: [this.registry],
   });
 
   readonly loopErrors = new Counter({
     name: 'alarm_loop_errors_total',
-    help: '작업 루프 한 바퀴가 예상하지 못한 오류로 끝난 횟수. 루프는 멈추지 않고 이어 간다',
+    help: '워커 폴링 루프 주기에서 발생한 예기치 않은 오류 횟수',
     labelNames: ['loop'] as const,
     registers: [this.registry],
   });

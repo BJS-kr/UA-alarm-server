@@ -12,7 +12,7 @@ export interface LockedAlarm {
   cleanupOwner: number | null;
 }
 
-/** 완료 판정의 "끝나지 않은 건" (ADR-0018, 0032). */
+/** 완료 판정 시 미종결로 간주하는 Delivery 상태 (ADR-0018, 0032). */
 const UNFINISHED = [
   DeliveryStatus.PENDING,
   DeliveryStatus.IN_FLIGHT,
@@ -20,14 +20,13 @@ const UNFINISHED = [
 ];
 
 /**
- * 알림 행을 잠근 트랜잭션 안에서 fn을 실행하고, 같은 트랜잭션에서 완료 판정을 한다 (ADR-0018).
- * Delivery를 최종 상태로 바꾸거나 PENDING으로 되돌리는 모든 경로가 이 함수를 거친다.
+ * 알림 행 잠금(FOR NO KEY UPDATE) 트랜잭션 내에서 fn을 실행하고 완료 판정을 수행한다 (ADR-0018).
+ * Delivery 상태 갱신 및 취소 정리 등 모든 후속 전이 경로가 이 함수를 거친다.
  *
- * - 알림 행을 잠그면 같은 알림의 기록이 한 줄로 선다. 뒤의 트랜잭션은 앞의 커밋을 본 뒤 확인하므로
- *   (READ COMMITTED는 문장마다 새 스냅숏을 쓴다) 진짜 마지막 기록만 "남은 건 없음"을 본다.
- * - 판정이 기록과 한 트랜잭션이라 기록과 판정 사이에 죽는 틈이 없다. 반복 확인이 필요 없다.
- * - 알림 상태를 잠금 아래에서 읽으므로 취소 1단계와 순서가 엇갈리지 않는다 (ADR-0017).
- * - FOR NO KEY UPDATE는 Delivery INSERT가 외래 키 확인으로 잡는 KEY SHARE와 충돌하지 않는다.
+ * - 동일 알림의 상태 갱신을 직렬화하여 마지막 트랜잭션이 정확히 완료(COMPLETED/CANCELED)를 판정한다.
+ * - 상태 기록과 완료 판정이 단일 트랜잭션으로 묶여 별도의 주기적 완료 폴링이 불필요하다.
+ * - 잠금 하에서 알림 상태를 읽으므로 취소 1단계와 경합하지 않는다 (ADR-0017).
+ * - FOR NO KEY UPDATE를 사용하여 Delivery INSERT 시의 외래 키(KEY SHARE) 잠금과 충돌하지 않는다.
  */
 export async function withAlarmLock<T>(
   db: Db,
@@ -55,9 +54,8 @@ export async function withAlarmLock<T>(
 }
 
 /**
- * 완료 판정. 숫자를 세지 않고 "끝나지 않은 건이 하나라도 있는가"만 본다. 끝나지 않은 건만 담은 부분 인덱스를 쓴다.
- * status는 잠금 아래에서 읽은 알림 상태다. 발송 중이면 COMPLETED, 취소 중이면 CANCELED로 끝낸다.
- * 발송 중인 알림은 펼치기가 끝나기 전에는 전체 수가 정해지지 않으므로 펼치기 완료를 함께 본다.
+ * 알림 완료 판정. 미종결 부분 인덱스(deliveries_unfinished_idx)에 대해 NOT EXISTS로 잔여 건 유무만 확인한다.
+ * SENDING 상태에서는 수신자 확장 완료(expansion_done = true) 조건을 함께 검사한다.
  */
 async function finalizeIfDone(
   executor: Executor,

@@ -43,7 +43,7 @@ export class AppLogger extends ConsoleLogger {
     message: unknown,
     options: JsonLogOptions,
   ): JsonLogObject {
-    // 여러 줄 메시지의 스택은 Nest가 스택으로 알아보지 못해 context 자리에 넣는다. 그래서 context도 스택처럼 가린다.
+    // 멀티라인 메시지의 스택 트레이스가 context 필드로 전달되는 경우를 대비해 context도 마스킹한다.
     const masked: JsonLogOptions = {
       ...options,
       context:
@@ -58,7 +58,7 @@ export class AppLogger extends ConsoleLogger {
         ? (maskSensitive(options.params) as Record<string, unknown>)
         : undefined,
     };
-    // 메시지는 우리가 쓴 상수이거나, 오류를 첫 인자로 넘겼을 때 그 오류의 글이다. 뒤의 경우를 위해 숫자를 가린다.
+    // 문자열 메시지나 Error 객체가 첫 인자로 전달될 때의 자유 형식 문자열에서도 연속 숫자 및 자격 증명을 마스킹한다.
     const logObject = super.getJsonLogObject(
       typeof message === 'string'
         ? maskFreeText(message)

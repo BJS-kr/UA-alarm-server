@@ -19,9 +19,9 @@ type PageStep = 'continue' | 'done' | 'stop';
 type UsersPage = Extract<UsersPageResult, { kind: 'ok' }>;
 
 /**
- * 수신자 펼치기 (ADR-0006). 알림 하나의 펼치기는 한 번에 한 워커만 쥔다.
- * 페이지마다 "Delivery 삽입 + 다음 커서 저장"을 한 트랜잭션으로 커밋하므로, 죽으면 넘겨받은 워커가 저장된 커서부터 잇는다.
- * 커밋된 Delivery는 즉시 발송 대상이 된다. 발송 모듈과는 DB 테이블로만 이어진다.
+ * 대량 알림 수신자 확장(Expansion, ADR-0006). 단일 알림의 수신자 확장은 한 번에 하나의 워커만 점유한다.
+ * 페이지마다 "Delivery 일괄 삽입 + 다음 커서 갱신"을 단일 트랜잭션으로 커밋하여, 워커 중단 시 인계받은 워커가 저장된 커서부터 재개한다.
+ * 커밋된 Delivery는 즉시 발송 대상이 된다.
  */
 export class Expander {
   private readonly loop: PollingLoop;
@@ -50,7 +50,7 @@ export class Expander {
     this.loop.start();
   }
 
-  /** 진행 중이면 현재 페이지를 커밋하고 멈춘다 (ADR-0007). */
+  /** 진행 중인 페이지 커밋을 마치고 종료한다 (ADR-0007). */
   stop(): Promise<void> {
     return this.loop.stop();
   }
@@ -71,7 +71,7 @@ export class Expander {
     this.logger.log('Expansion started', { fromCursor: cursor });
 
     while (!this.loop.isStopping) {
-      // 사용자 API를 부르기 전마다 기한을 연장한다. 취소됐거나 넘겨받혔으면 연장되지 않으므로 멈춘다 (ADR-0004, 0017).
+      // 외부 사용자 API 호출 직전마다 리스를 갱신한다. 취소되었거나 다른 워커에 인계된 경우 갱신이 실패하므로 즉시 중단한다 (ADR-0004, 0017).
       const isStillMine = await this.repository.renew(
         task,
         this.config.TASK_LEASE_MS,
@@ -96,7 +96,7 @@ export class Expander {
         this.metrics.expansionFetchFailures.inc({
           kind: isPermanent ? 'permanent' : 'transient',
         });
-        // 다시 해도 결과가 같다. 끝없이 재시도하지 않고 알림을 취소 처리해 사람이 보게 한다 (ADR-0006).
+        // 비재시도성 영구 오류 시 무한 재시도하지 않고 알림을 CANCELING(EXPANSION_FAILED)으로 전이한다 (ADR-0006).
         if (isPermanent) return this.giveUp(task, page);
         failures += 1;
         const delayMs = retryDelayMs(failures, {
@@ -105,7 +105,7 @@ export class Expander {
           jitterRatio: this.config.RETRY_JITTER_RATIO,
         });
 
-        // 기다림이 상한에 닿았다 = 사용자 서비스가 한동안 계속 실패한다. 경보를 걸 수 있게 error로 남긴다.
+        // 백오프 지연이 상한에 도달한 경우(외부 사용자 서비스 장기 장애) error 레벨로 로깅한다.
         const isStalled = delayMs >= this.config.RETRY_MAX_MS;
         const log = isStalled ? 'error' : 'warn';
 
@@ -115,7 +115,7 @@ export class Expander {
             : 'Fetching users failed, retrying',
           { code: page.code, delayMs },
         );
-        // 기다리는 동안 넘겨받히지 않도록 기다릴 시간만큼 기한을 늘린다.
+        // 백오프 대기 중 리스 만료로 인계되지 않도록 대기 시간만큼 리스를 연장한다.
         const isStillMineWhileWaiting = await this.repository.renew(
           task,
           delayMs + this.config.TASK_LEASE_MS,
@@ -132,7 +132,7 @@ export class Expander {
       cursor = page.nextCursor;
     }
 
-    // 정상 종료로 멈췄다. 담당을 내려놓아 다른 워커가 기한을 기다리지 않고 이어 가게 한다 (ADR-0007).
+    // 정상 종료 시 점유를 즉시 해제하여 다른 워커가 리스 만료 대기 없이 이어받도록 한다 (ADR-0007).
     await this.repository.release(task);
   }
 
@@ -161,7 +161,7 @@ export class Expander {
           const isSending = alarm.status === AlarmStatus.SENDING;
           const isMine = alarm.expansionOwner === this.workerId;
           const isExpectedPage = alarm.expansionCursor === pageCursor;
-          // 취소됐거나, 넘겨받혔거나, 이 페이지가 이미 들어갔으면 멈춘다.
+          // 취소되었거나, 다른 워커에 인계되었거나, 이미 반영된 페이지면 중단한다.
           const isMyNextPage = isSending && isMine && isExpectedPage;
           if (!isMyNextPage) return 'stop';
           await this.repository.savePage(

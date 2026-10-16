@@ -51,7 +51,7 @@ export class AppConfig {
   @Type(() => Number) @IsInt() @Min(1) BREAKER_PAUSE_MAX_MS = 60_000;
   @Type(() => Number) @IsInt() @Min(0) BREAKER_STREAK_WINDOW_MS = 60_000;
 
-  // 점유 기한과 넘겨받기 (ADR-0004, 0011, 0026)
+  // 점유 리스(lease) 및 만료 회수 (ADR-0004, 0011, 0026)
   @Type(() => Number) @IsInt() @Min(10) DELIVERY_LEASE_MS = 30_000;
   @Type(() => Number) @IsInt() @Min(10) TASK_LEASE_MS = 30_000;
   @Type(() => Number) @IsInt() @Min(10) HOUSEKEEPING_INTERVAL_MS = 2_000;
@@ -66,16 +66,16 @@ export class AppConfig {
   @IsIn(['info', 'debug']) LOG_LEVEL: 'info' | 'debug' = 'info';
   @IsOptional() @IsString() API_KEY?: string = undefined;
 
-  // api의 DB 대기 한도. 요청마다 반드시 응답하기 위해서다 (ADR-0039).
-  // 쿼리는 ms 단위라 짧게 두되, 멈춘 워커가 쥔 알림 행 잠금이 풀리는 시간(트랜잭션 유휴 한도)보다는 길게 둔다.
+  // api 프로세스의 DB 대기 타임아웃 (ADR-0039).
+  // 멈춘 워커가 점유한 행 잠금이 해제되는 시간(IDLE_TX_TIMEOUT_MS)보다 길게 설정한다.
   @Type(() => Number) @IsInt() @Min(100) DB_ACQUIRE_TIMEOUT_MS = 5_000;
   @Type(() => Number) @IsInt() @Min(100) DB_QUERY_TIMEOUT_MS = 10_000;
 }
 
-/** 값 하나가 아니라 값 사이의 관계가 깨지면 안전성이 무너지는 항목들 (ADR-0030). */
+/** 개별 설정값 간의 불변식 검증 (ADR-0030). */
 function relationErrors(config: AppConfig, role: ProcessRole): string[] {
   const errors: string[] = [];
-  // 요청 한 번과 사용자 조회 한 번은 기한 안에 끝나야 한다. 정상인 건이 넘겨받히지 않게 하기 위해서다 (ADR-0004).
+  // 단건 발송 타임아웃과 사용자 조회 타임아웃은 리스(lease) 시간보다 짧아야 정상 요청이 만료 회수되지 않는다 (ADR-0004).
   const isSendWithinLease = config.SEND_TIMEOUT_MS < config.DELIVERY_LEASE_MS;
   if (!isSendWithinLease) {
     errors.push('SEND_TIMEOUT_MS < DELIVERY_LEASE_MS is required (ADR-0004)');
@@ -104,7 +104,7 @@ function relationErrors(config: AppConfig, role: ProcessRole): string[] {
     );
   }
 
-  // 발송 시작과 취소는 알림 행을 바꾸므로, 트랜잭션 도중 멈춘 워커가 쥔 잠금을 Postgres가 풀 때까지 기다릴 수 있다 (ADR-0004, 0039).
+  // 발송 시작과 취소는 알림 행을 갱신하므로, 멈춘 워커의 트랜잭션 잠금이 해제될 때까지 대기할 수 있어야 한다 (ADR-0004, 0039).
   const isQueryOutlastingStuckLock =
     config.DB_QUERY_TIMEOUT_MS > config.IDLE_TX_TIMEOUT_MS;
   if (!isQueryOutlastingStuckLock) {
@@ -129,17 +129,17 @@ function relationErrors(config: AppConfig, role: ProcessRole): string[] {
   return errors;
 }
 
-/** 틀린 값이 하나라도 있으면 어떤 키가 왜 틀렸는지 모아 예외를 던진다. 기동은 여기서 멈춘다. */
+/** 검증 실패 시 모든 오류 항목을 취합해 예외를 발생시키고 기동을 중단한다. */
 export function loadConfig(
   env: Record<string, string | undefined>,
   role: ProcessRole,
 ): AppConfig {
   const known = new Set(Object.keys(new AppConfig()));
   const defined = Object.fromEntries(
-    // 빈 문자열은 값이 없는 것으로 본다.
+    // 빈 문자열은 미지정으로 간주한다.
     Object.entries(env).filter(([k, v]) => known.has(k) && v),
   );
-  // 기본값은 필드 초기값이 맡고, 숫자 변환은 @Type이 맡는다.
+  // 기본값은 클래스 필드 초기값을 사용하고 숫자 변환은 @Type이 수행한다.
   const config = plainToInstance(AppConfig, defined);
   const fieldErrors = validateSync(config).flatMap((e) =>
     Object.values(e.constraints ?? {}).map((msg) => `${e.property}: ${msg}`),
@@ -155,7 +155,7 @@ export function loadConfig(
   return config;
 }
 
-/** 기동 로그에 남길 때 비밀값을 가린다 (ADR-0028, 0030). */
+/** 기동 로그 출력 시 민감 정보를 마스킹한다 (ADR-0028, 0030). */
 export function describeConfig(config: AppConfig): Record<string, unknown> {
   const maskUrl = (url?: string) => url && maskUrlCredentials(url);
 

@@ -24,12 +24,11 @@ import { CharLength, NoNulCharacter } from '../http/validation';
 
 const NOT_BLANK = /\S/;
 
-/** 알림 생성 요청 (ADR-0021). 모르는 필드는 전역 ValidationPipe가 거절한다. */
+/** 알림 생성 요청 DTO (ADR-0021). 정의되지 않은 필드는 전역 ValidationPipe에서 거부한다. */
 export class CreateAlarmRequest {
   @ApiProperty({
     enum: Object.values(AlarmType),
-    description:
-      '필수이며 기본값이 없다. 빠뜨리기만 해도 전체 발송이 되는 사고를 막는다.',
+    description: '알림 발송 유형 (URGENT | BULK). 기본값 없이 필수로 지정한다.',
   })
   @IsIn(Object.values(AlarmType))
   type!: AlarmType;
@@ -37,7 +36,7 @@ export class CreateAlarmRequest {
   @ApiProperty({
     minLength: 1,
     maxLength: 100,
-    description: '알림을 구별하는 관리용 이름. 외부로 발송되지 않는다.',
+    description: '알림 식별용 관리 제목 (외부 발송 본문에 포함되지 않음)',
   })
   @IsString()
   @CharLength(1, 100)
@@ -48,7 +47,7 @@ export class CreateAlarmRequest {
   @ApiProperty({
     minLength: 1,
     maxLength: 1000,
-    description: '수신자에게 발송되는 본문',
+    description: '수신자에게 발송되는 알림 본문',
   })
   @IsString()
   @CharLength(1, 1000)
@@ -61,7 +60,8 @@ export class CreateAlarmRequest {
     minItems: 1,
     maxItems: 100,
     uniqueItems: true,
-    description: 'URGENT 전용이며 필수다. BULK에 지정하면 거절한다.',
+    description:
+      'URGENT 알림의 대상 수신자 ID 목록 (BULK 알림에서는 지정 불가)',
   })
   @IsOptional()
   @IsArray()
@@ -134,13 +134,13 @@ export class AlarmView {
     enum: Object.values(CancelReason),
     nullable: true,
     description:
-      'REQUESTED는 취소 요청, EXPANSION_FAILED는 수신자 조회가 다시 해도 안 되는 오류로 실패해 시스템이 멈춘 것이다',
+      '취소 사유 (REQUESTED: 사용자 취소 요청, EXPANSION_FAILED: 수신자 목록 조회 영구 오류로 인한 중단)',
   })
   cancelReason!: CancelReason | null;
   @ApiProperty({
     nullable: true,
     type: String,
-    description: '시스템이 멈춘 경우의 마지막 오류 코드',
+    description: '비정상 중단 시 기록된 마지막 오류 코드',
   })
   lastErrorCode!: string | null;
   @ApiProperty({ nullable: true, type: String })
@@ -160,12 +160,12 @@ export class DeliveryCounts {
 export class AlarmDetailView extends AlarmView {
   @ApiPropertyOptional({
     type: [String],
-    description: 'URGENT일 때 지정한 수신자',
+    description: 'URGENT 알림의 대상 수신자 ID 목록',
   })
   recipientIds?: string[];
   @ApiProperty({
     type: DeliveryCounts,
-    description: '조회 시점에 Delivery에서 센 값 (ADR-0018)',
+    description: '조회 시점의 상태별 Delivery 집계 (ADR-0018)',
   })
   counts!: DeliveryCounts;
 }
@@ -198,12 +198,12 @@ class FieldErrorView {
   @ApiProperty() message!: string;
 }
 
-/** RFC 9457 Problem Details (ADR-0019). Content-Type은 application/problem+json이다. */
+/** RFC 9457 Problem Details 응답 스키마 (ADR-0019). Content-Type: application/problem+json */
 export class ProblemView {
   @ApiProperty({
     example: '/problems/invalid-state',
     enum: Object.values(ProblemType),
-    description: '에러 종류. 클라이언트는 이 값으로 분기한다',
+    description: '오류 유형 식별자 URI',
   })
   type!: string;
   @ApiProperty({ example: 'Not allowed in the current state' }) title!: string;
@@ -211,15 +211,17 @@ export class ProblemView {
   @ApiPropertyOptional() detail?: string;
   @ApiProperty({ example: '/v1/alarms/0193.../send' }) instance!: string;
   @ApiProperty({
-    description: '같은 값이 서버 로그에 남는다',
+    description: '요청 추적용 식별자 (서버 로그와 매핑)',
     example: '4bf92f3577b34da6a3ce929d0e0e4736',
   })
   traceId!: string;
   @ApiPropertyOptional({
     type: [FieldErrorView],
-    description: '입력 검증 실패(400)일 때 필드별 오류',
+    description: '요청 검증 실패(400) 시 필드별 상세 오류 목록',
   })
   errors?: FieldErrorView[];
-  @ApiPropertyOptional({ description: '상태 충돌(409)일 때 현재 상태' })
+  @ApiPropertyOptional({
+    description: '상태 전이 충돌(409) 시 현재 리소스 상태',
+  })
   currentStatus?: string;
 }

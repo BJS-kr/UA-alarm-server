@@ -2,7 +2,7 @@ import { LoggerService } from '@nestjs/common';
 import { monotonicMs } from './loop-utils';
 
 /**
- * 한 바퀴의 결과. 'busy'면 쉬지 않고 다음 바퀴를 돌고, 'idle'이면 idleMs를, { sleepMs }면 그만큼 쉰다.
+ * 폴링 주기 1회의 반환값. 'busy'면 즉시 다음 주기를 실행하고, 'idle'이면 idleMs만큼, { sleepMs }면 지정 시간만큼 대기한다.
  */
 export type Tick = 'busy' | 'idle' | { sleepMs: number };
 
@@ -10,14 +10,13 @@ export interface PollingLoopOptions {
   name: string;
   idleMs: number;
   logger: LoggerService;
-  /** 한 바퀴가 예상하지 못한 오류로 끝났을 때. 메트릭을 올린다. */
+  /** 폴링 주기에서 처리되지 않은 예외 발생 시 호출되는 콜백 (메트릭 집계용). */
   onError: (loopName: string) => void;
 }
 
 /**
- * 워커의 작업 루프 하나 (ADR-0039). 멈추라는 요청이 올 때까지 tick을 반복한다.
- * tick이 예상하지 못한 오류로 끝나도 루프는 죽지 않는다. 로그와 메트릭으로 남기고 잠깐 쉰 뒤 이어 간다.
- * 그래서 루프를 쓰는 모듈은 try/catch 없이 한 바퀴에 할 일만 쓴다.
+ * 워커 백그라운드 폴링 루프 (ADR-0039). 중지 요청 시까지 tick 함수를 반복 실행한다.
+ * 개별 주기에서 예외가 발생해도 루프를 중단하지 않고 로깅 및 메트릭 기록 후 idleMs 대기 뒤 재개한다.
  */
 export class PollingLoop {
   private isStopRequested = false;
@@ -34,7 +33,7 @@ export class PollingLoop {
     this.done = this.run();
   }
 
-  /** 돌던 바퀴를 마치고 멈춘다. */
+  /** 현재 실행 중인 주기를 마친 후 루프를 종료한다. */
   async stop(): Promise<void> {
     this.isStopRequested = true;
     this.wake?.();
@@ -42,8 +41,8 @@ export class PollingLoop {
   }
 
   /**
-   * ms만큼 쉬되, 멈추라는 요청이 오면 바로 깬다. 바퀴 안에서 오래 쉬는 모듈(펼치기의 재시도 대기)도 이것을 쓴다.
-   * 그냥 쉬면 정상 종료가 그 대기를 다 기다려 유예 시간을 넘긴다 (ADR-0007).
+   * 지정 시간(ms)만큼 대기하되, stop() 호출 시 즉시 깨어난다.
+   * 루프 내부에서 백오프 대기를 수행할 때도 사용하여 정상 종료(graceful shutdown) 지연을 방지한다 (ADR-0007).
    */
   pause(ms: number): Promise<void> {
     if (this.isStopRequested) return Promise.resolve();
@@ -62,7 +61,7 @@ export class PollingLoop {
     return this.isStopRequested;
   }
 
-  /** 최근 staleMs 안에 한 바퀴 이상 시작했는가. 끝나지 않는 쿼리에 걸린 루프를 찾는다 (ADR-0026). */
+  /** 최근 staleMs 이내에 새 주기가 시작되었는지 확인한다 (무한 대기 쿼리 감지용 liveness 기준, ADR-0026). */
   isTurning(staleMs: number): boolean {
     return monotonicMs() - this.lastTickAt < staleMs;
   }

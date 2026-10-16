@@ -30,7 +30,7 @@ export const DeliveryStatus = {
 export type DeliveryStatus =
   (typeof DeliveryStatus)[keyof typeof DeliveryStatus];
 
-/** 꺼내는 순서의 첫 기준. 긴급이 먼저다 (ADR-0011). */
+/** 점유(claim) 우선순위 기준값 (URGENT=0, BULK=1, ADR-0011). */
 export function priorityOf(type: AlarmType): 0 | 1 {
   return type === AlarmType.URGENT ? 0 : 1;
 }

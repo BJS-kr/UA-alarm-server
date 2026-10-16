@@ -4,8 +4,8 @@ import { unhandledErrors } from '../../shared/runtime/process-guardrail';
 import { ApiMetricsRepository } from './metrics.repository';
 
 /**
- * DB에서 세는 메트릭은 api 한 곳에서만 낸다 (ADR-0027).
- * 워커마다 세면 같은 값이 워커 수만큼 중복되기 때문이다. 값은 스크레이프할 때 센다.
+ * DB 상태 집계 메트릭은 api 프로세스에서만 노출한다 (ADR-0027).
+ * 워커마다 중복 집계되는 것을 방지하며 스크레이프 시점에 쿼리한다.
  */
 export function createApiRegistry(db: Db): Registry {
   const registry = new Registry();
@@ -16,7 +16,7 @@ export function createApiRegistry(db: Db): Registry {
 
   new Gauge({
     name: 'alarm_deliveries_pending',
-    help: '우선순위별 대기 건수 (priority 0=긴급, 1=대량)',
+    help: '우선순위별 발송 대기(PENDING) Delivery 건수 (priority 0=긴급, 1=대량)',
     labelNames: ['priority'],
     registers: [registry],
     async collect() {
@@ -32,7 +32,7 @@ export function createApiRegistry(db: Db): Registry {
 
   new Gauge({
     name: 'alarm_pending_oldest_due_seconds',
-    help: '지금 꺼낼 수 있는데 아직 남아 있는 가장 오래된 대기 건의 나이. 긴급이 10초를 넘으면 밀리고 있다',
+    help: '점유 가능 시각(next_attempt_at)이 도래한 최장기 PENDING 건의 경과 시간(초)',
     labelNames: ['priority'],
     registers: [registry],
     async collect() {
@@ -48,7 +48,7 @@ export function createApiRegistry(db: Db): Registry {
 
   new Gauge({
     name: 'alarm_oldest_in_flight_seconds',
-    help: '가장 오래 전송 중인 건의 나이. 기한(30초)이 지난 건은 2초 안에 넘겨받혀야 하므로, 1분을 넘으면 넘겨받기가 돌지 않는다',
+    help: '최장기 IN_FLIGHT 건의 경과 시간(초). 리스(30초) 만료 후 회수 지연 여부 확인용',
     registers: [registry],
     async collect() {
       this.set(await repository.oldestInFlightSeconds());
@@ -57,7 +57,7 @@ export function createApiRegistry(db: Db): Registry {
 
   new Gauge({
     name: 'alarm_deliveries_unconfirmed',
-    help: '결과 확인을 기다리는 건수',
+    help: '발송 내역 조회(상태 확정) 대기 중인 UNCONFIRMED Delivery 건수',
     registers: [registry],
     async collect() {
       this.set(await repository.unconfirmedCount());
@@ -66,7 +66,7 @@ export function createApiRegistry(db: Db): Registry {
 
   new Gauge({
     name: 'alarm_alarms',
-    help: '상태별 알림 수',
+    help: '상태별 알림(Alarm) 수',
     labelNames: ['status'],
     registers: [registry],
     async collect() {

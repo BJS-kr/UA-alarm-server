@@ -15,13 +15,13 @@ export interface BreakerOptions {
 const MAX_STREAK = 10;
 
 /**
- * 모든 워커가 함께 쓰는 토큰 버킷 (ADR-0009). 상태는 PG의 행 하나다.
- * 채우는 타이머가 없다. 요청할 때 흐른 시간만큼 계산해 채운다(lazy refill).
+ * 다중 워커 공유 토큰 버킷 (ADR-0009). PostgreSQL 단일 행(rate_limiter)에 상태를 유지하며
+ * 별도 보충 타이머 없이 요청 시점의 경과 시간으로 토큰을 계산한다(lazy refill).
  */
 export class TokenBucket {
   private readonly repository: RateLimiterRepository;
 
-  /** probeLeaseMs: 시험 발송을 맡은 워커가 결과를 알리지 못하고 죽었을 때, 다른 워커가 다시 시험하기까지의 시간 */
+  /** probeLeaseMs: 프로브 발송을 점유한 워커가 중단되었을 때 다른 워커가 다음 프로브를 시도하기까지의 리스 시간(ms) */
   constructor(
     db: Db,
     private readonly ratePerSec: number,
@@ -40,26 +40,24 @@ export class TokenBucket {
     );
   }
 
-  /** 시험 발송이 성공했다. 브레이커를 닫는다 (ADR-0014). */
+  /** 프로브 발송 성공 시 서킷 브레이커를 CLOSED로 전이한다 (ADR-0014). */
   closeBreaker(): Promise<void> {
     return this.repository.closeBreaker();
   }
 
-  /** 시험 발송 토큰을 쓰지 않고 돌려준다. */
+  /** 미사용 프로브 토큰을 반환한다. */
   releaseProbe(): Promise<void> {
     return this.repository.releaseProbe();
   }
 
-  /** 429를 받으면 정지 해제 시각을 미뤄 모든 워커를 함께 멈춘다. */
+  /** 429 응답 수신 시 paused_until을 갱신해 전체 워커의 발송을 일시 정지한다. */
   pauseFor(ms: number): Promise<void> {
     return this.repository.extendPause(ms);
   }
 
   /**
-   * 서킷 브레이커 발동 (ADR-0014). 브레이커를 열고 정지한다. 이미 정지 중이면 발동하지 않는다.
-   * 시험 발송이 실패했을 때도 이 경로로 다시 연다.
-   * 여러 워커가 같은 장애를 동시에 감지해도 정지 시간이 겹쳐 두 배씩 늘지 않게 하기 위해서다.
-   * 직전 브레이커 정지가 풀린 뒤 streakWindowMs 안에 다시 발동하면 연달아 발동한 것으로 보고 정지를 늘린다.
+   * 서킷 브레이커 OPEN 전이 및 일시 정지 설정 (ADR-0014). 이미 정지 중이면 중복 발동하지 않는다.
+   * 프로브 발송 실패 시에도 동일 경로로 재개방하며, 직전 정지 해제 후 streakWindowMs 이내 재발동 시 streak을 증가시킨다.
    */
   tripBreaker(
     options: BreakerOptions,

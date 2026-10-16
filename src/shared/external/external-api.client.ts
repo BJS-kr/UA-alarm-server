@@ -72,8 +72,8 @@ export class ExternalApiClient {
       const isWithheld = outcome.code === SEND_GUARD_CODE;
       if (isWithheld) return { kind: 'withheld' };
 
-      // 요청 바이트를 커널에 다 넘기기 전에 실패했으면(연결 거부, 연결 단계 시간 초과 등) 서버는 완전한 요청을
-      // 받지 못했으므로 처리할 수 없다. 다 넘긴 뒤의 실패는 보냈는지 모른다 (ADR-0037).
+      // 요청 바이트가 커널 버퍼에 완전히 기록되기 전에 실패한 경우(커넥션 거부, 핸드셰이크 타임아웃 등)는 미전송(not_sent)으로,
+      // 기록 완료 이후의 실패는 전송 여부 미확정(unknown)으로 분류한다 (ADR-0037).
       return outcome.flushed
         ? { kind: 'unknown', code: outcome.code, message: outcome.message }
         : { kind: 'not_sent', code: outcome.code, message: outcome.message };
@@ -93,7 +93,7 @@ export class ExternalApiClient {
       const isAcknowledged = typeof messageId === 'string';
       if (isAcknowledged) return { kind: 'accepted', messageId };
 
-      // 접수는 됐는데 응답을 해석하지 못했다. 결과 확인으로 messageId를 얻는다.
+      // 2xx 응답이나 본문 파싱에 실패한 경우 발송 내역 조회(Reconciliation)로 messageId를 확인한다.
       return {
         kind: 'unknown',
         code: 'UNPARSABLE_ACCEPT',
@@ -282,14 +282,14 @@ export class ExternalApiClient {
           return;
         }
 
-        // 'finish'는 요청 바이트가 소켓에 넘어간 뒤에 온다. 이후의 실패는 "보냈는지 모르는" 실패다.
+        // 'finish' 이벤트는 요청 바이트가 소켓 버퍼에 기록된 후 발생하며, 이후의 실패는 전송 여부 미확정(unknown)으로 처리한다.
         req.end(payload, () => {
           isFlushed = true;
         });
       };
 
-      // 소켓을 배정받고 연결된 뒤에 쓴다. 호출과 쓰기 사이의 비동기 틈(소켓 배정, 연결)에서 멈췄다 깨어난 워커가
-      // 그 사이 넘겨받힌 건을 보내지 않도록, 확인을 쓰기 바로 앞에 둔다 (ADR-0004).
+      // 소켓 할당 및 연결 수립 직후 전송한다. 호출부터 소켓 연결 사이의 비동기 대기 중에 프로세스가 지연되어
+      // 리스가 만료 회수된 건이 전송되지 않도록 소켓 쓰기 직전에 canWrite를 검사한다 (ADR-0004).
       req.once('socket', (socket) =>
         socket.connecting ? socket.once('connect', send) : send(),
       );

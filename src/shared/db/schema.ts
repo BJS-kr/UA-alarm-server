@@ -160,9 +160,9 @@ export const rateLimiter = pgTable(
     breakerLastUntil: timestamp('breaker_last_until', tz)
       .notNull()
       .default(sql`'-infinity'`),
-    // 브레이커가 열렸고 아직 시험 발송이 성공하지 않았다. 정지가 풀려도 시험 발송 한 건만 나간다 (ADR-0014).
+    // 서킷 브레이커 OPEN 상태 플래그. 일시 정지 해제 후에도 프로브(단건 시험 발송)만 허용한다 (ADR-0014).
     breakerOpen: boolean('breaker_open').notNull().default(false),
-    // 시험 발송이 나가 있는 동안의 기한. 지나면 다른 워커가 다시 시험한다.
+    // 프로브 발송 리스 만료 시각. 만료 시 다른 워커가 다음 프로브를 수행한다.
     probeUntil: timestamp('probe_until', tz)
       .notNull()
       .default(sql`'-infinity'`),

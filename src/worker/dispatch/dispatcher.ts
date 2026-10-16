@@ -32,13 +32,13 @@ export interface DispatcherDeps {
 }
 
 /**
- * 작업 루프: 토큰 받기 → 꺼내기 → 보내기 → 결과 기록 (ADR-0009, 0011, 0013).
- * 토큰을 먼저 받아야 꺼내는 순간 가장 급한 건을 집는다. 꺼낸 건은 기다리지 않고 바로 보낸다.
+ * 발송 루프: 토큰 획득 → 대상 점유(claim) → 외부 발송 → 결과 기록 (ADR-0009, 0011, 0013).
+ * 토큰을 선획득한 뒤 점유해야 점유 시점 기준 최우선순위 건을 즉시 발송할 수 있다.
  */
 export class Dispatcher {
   private readonly inFlight = new Set<Promise<void>>();
   private readonly loop: PollingLoop;
-  /** 연달아 토큰을 0개 받은 횟수. 받으면 0으로 돌아간다 (ADR-0009). */
+  /** 연속으로 토큰을 0개 획득한 횟수. 토큰 획득 시 0으로 초기화된다 (ADR-0009). */
   private emptyGrants = 0;
 
   constructor(private readonly deps: DispatcherDeps) {
@@ -57,12 +57,12 @@ export class Dispatcher {
     this.loop.start();
   }
 
-  /** 작업 루프가 최근에 돌았는가. worker의 생존 확인 기준이다 (ADR-0026). */
+  /** 발송 루프가 지정 시간 내에 실행되었는지 확인한다 (워커 liveness 기준, ADR-0026). */
   isLive(): boolean {
     return this.loop.isTurning(this.deps.config.LIVENESS_STALL_MS);
   }
 
-  /** 새 건을 꺼내지 않고, 이미 보낸 요청의 결과 기록을 graceMs까지 기다린다 (ADR-0007). */
+  /** 신규 점유를 중단하고 진행 중인 발송 요청의 결과 기록을 graceMs까지 대기한다 (ADR-0007). */
   async stop(graceMs: number): Promise<void> {
     await this.loop.stop();
     await waitAtMost(Promise.allSettled([...this.inFlight]), graceMs);
@@ -89,36 +89,36 @@ export class Dispatcher {
     if (isOutOfTokens) return { sleepMs: this.waitForTokens(grant.waitMs) };
     this.emptyGrants = 0;
 
-    // 기한은 claim 쿼리를 보내기 전의 단조 시계로 잰다. DB가 적는 기한보다 늘 이르므로 워커 쪽 판단이 보수적이다 (ADR-0004).
+    // 리스 만료 시각은 claim 쿼리 직전의 단조 시계 기준으로 계산하여 DB의 lease_until보다 항상 보수적으로 판정한다 (ADR-0004).
     const claimStartedAt = monotonicMs();
     const claimed = await deliveries.claim(
       grant.granted,
       config.DELIVERY_LEASE_MS,
     );
     const leaseDeadline = claimStartedAt + config.DELIVERY_LEASE_MS;
-    // 꺼낼 건이 없으면 받은 토큰은 버린다. 할 일이 없을 때만 생기므로 처리량 손해가 없다.
+    // 점유할 대상이 없으면 획득한 토큰은 소멸시킨다.
     const isNothingToSend = claimed.length === 0;
     if (isNothingToSend) {
-      // 시험 발송 토큰을 받았는데 보낼 건이 없다. 바로 돌려줘 다른 워커가 시험할 수 있게 한다.
+      // 프로브(단건 시험 발송) 토큰을 획득했으나 발송 대상이 없는 경우 즉시 반환하여 다른 워커가 프로브를 수행할 수 있게 한다.
       if (grant.isProbe) await this.releaseProbe();
 
       return 'idle';
     }
 
-    // 시험 발송이면 토큰이 하나라 건도 하나다.
+    // 프로브 발송 시에는 획득 토큰이 1개이므로 점유 건도 1건이다.
     for (const delivery of claimed) {
       this.track(this.sendOne(delivery, leaseDeadline, grant.isProbe));
     }
 
-    // 통을 비웠으면 다음 토큰이 생길 때까지 묻지 않는다. 바로 다시 물으면 거의 늘 0개라 헛된 갱신만 생긴다 (ADR-0009).
+    // 버킷 토큰이 소진된 경우 다음 토큰 보충 시각까지 대기하여 불필요한 DB 행 경합을 방지한다 (ADR-0009).
     const isBucketDrained = grant.waitMs > 0;
 
     return isBucketDrained ? { sleepMs: grant.waitMs } : 'busy';
   }
 
   /**
-   * 정지(429·브레이커)나 시험 발송 때문이면 그 시각까지 쉰다(길면 IDLE_POLL_MS마다 다시 본다).
-   * 다른 워커가 토큰을 먼저 가져간 것이면 연달아 0개일수록 두 배씩 물러난다 (ADR-0009).
+   * 일시 정지(429·브레이커) 또는 프로브 대기 상태면 해당 시각까지 대기한다 (최대 IDLE_POLL_MS 단위로 재확인).
+   * 다중 워커 경합으로 토큰을 획득하지 못한 경우 연속 실패 횟수에 따라 지수 백오프를 적용한다 (ADR-0009).
    */
   private waitForTokens(waitMs: number): number {
     const isPausedLonger = waitMs > TOKEN_WAIT_MAX_MS;
@@ -128,7 +128,7 @@ export class Dispatcher {
     return tokenRetryWaitMs(this.emptyGrants, waitMs);
   }
 
-  /** 보내는 건 하나는 루프와 따로 돈다. 예상하지 못한 오류가 나도 루프와 다른 건에 번지지 않게 여기서 받는다. */
+  /** 개별 발송 비동기 작업을 추적하며, 예기치 않은 예외가 루프나 다른 작업으로 전파되지 않도록 격리한다. */
   private track(work: Promise<void>): void {
     const tracked = work
       .catch((error: unknown) => {
@@ -172,8 +172,8 @@ export class Dispatcher {
     const canSend = () =>
       hasLeaseFor(leaseDeadline, monotonicMs(), config.SEND_TIMEOUT_MS);
 
-    // 정상 종료 중에 꺼낸 건은 보내지 않고 반납한다 (ADR-0007).
-    // 남은 기한은 소켓에 쓰기 바로 앞에서 확인한다. 꺼낸 직후보다 늦은 그 시점이 마지막 기회라 한 번이면 된다 (ADR-0004).
+    // 정상 종료(graceful shutdown) 중 점유된 건은 발송하지 않고 즉시 반납한다 (ADR-0007).
+    // 잔여 리스 검증(canSend)은 소켓 쓰기 직전에 수행한다 (ADR-0004).
     const isShuttingDown = this.loop.isStopping;
     if (isShuttingDown) {
       await this.giveBack(delivery, isProbe);
@@ -200,8 +200,7 @@ export class Dispatcher {
       (monotonicMs() - startedAt) / 1000,
     );
 
-    // 쓰기 직전 확인에 걸려 나가지 않았다. 꺼낼 때 확인에 걸린 건과 같이 반납한다.
-    // 외부 장애가 아니므로 서킷 브레이커에 세지 않고, 시도 횟수도 되돌린다 (ADR-0004, 0014).
+    // 소켓 쓰기 직전 리스 검증 실패로 발송을 보류한 경우, 브레이커 집계에서 제외하고 시도 횟수를 차감해 반납한다 (ADR-0004, 0014).
     const isWithheld = result.kind === 'withheld';
     if (isWithheld) {
       await this.giveBack(delivery, isProbe);
@@ -215,7 +214,7 @@ export class Dispatcher {
       logger.warn('Got 429, pausing all workers', {
         retryAfterSec: result.retryAfterSec,
       });
-      // 정지 기록이 실패해도 이 건의 결과는 기록해야 하므로 여기서 받는다.
+      // 일시 정지 갱신이 실패하더라도 현재 건의 발송 결과 기록은 진행한다.
       await bucket
         .pauseFor(result.retryAfterSec * 1000)
         .catch((e: unknown) =>
@@ -229,7 +228,7 @@ export class Dispatcher {
         logger.error('Could not record the circuit breaker result', e as Error),
       );
 
-    // 브레이커가 열린 동안의 실패는 그 건이 아니라 외부 장애 탓이므로 시도 횟수에 세지 않는다 (ADR-0014).
+    // 서킷 브레이커 OPEN 구간의 실패는 외부 장애로 간주하여 시도 횟수(attempts)에서 차감한다 (ADR-0014).
     const decision = decideAfterSend(
       result,
       delivery.attempts,
@@ -270,8 +269,8 @@ export class Dispatcher {
   }
 
   /**
-   * 결과 기록이 펜싱에 걸렸다 = 그사이 다른 워커가 넘겨받았다.
-   * clientRef로 실제 중복 여부를 확인해 남긴다 (ADR-0004). 조용히 넘어가지 않는다.
+   * 결과 기록이 펜싱 조건(owner/attempts) 불일치로 거부된 경우(리스 만료 회수 발생),
+   * clientRef로 외부 발송 내역을 조회해 실제 중복 발송 여부를 확인하고 기록한다 (ADR-0004).
    */
   private async onFenced(delivery: ClaimedDelivery): Promise<void> {
     const { client, config, deliveries, metrics, logger } = this.deps;
@@ -306,7 +305,7 @@ export class Dispatcher {
   ): void {
     const { logger } = this.deps;
 
-    // debug에서는 Delivery와 겹치는 정보도 생략 없이 남긴다. 본문은 로거가 마스킹한다 (ADR-0028).
+    // debug 레벨에서는 요청 상세 정보를 기록하며 본문은 로거에서 마스킹한다 (ADR-0028).
     logger.debug?.('Send attempt', {
       recipientId: delivery.recipientId,
       priority: delivery.priority,
@@ -358,7 +357,7 @@ export class Dispatcher {
     }
   }
 
-  /** 보내지 않은 건을 반납한다. 시험 발송 토큰이었으면 그것도 돌려준다. */
+  /** 미전송 건을 반납하며, 프로브 토큰으로 점유한 경우 프로브 슬롯도 함께 반환한다. */
   private async giveBack(
     delivery: ClaimedDelivery,
     isProbe: boolean,
@@ -367,7 +366,7 @@ export class Dispatcher {
     await durable(() => this.deps.deliveries.releaseUnsent(delivery));
   }
 
-  /** 돌려주지 못해도 시험 발송의 기한이 지나면 다른 워커가 다시 시험하므로, 실패는 기록만 한다. */
+  /** 프로브 슬롯 반환 실패 시에도 probe_until 만료 후 다음 프로브가 가능하므로 오류만 로깅한다. */
   private releaseProbe(): Promise<void> {
     return this.deps.bucket
       .releaseProbe()

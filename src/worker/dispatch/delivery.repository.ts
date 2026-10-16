@@ -34,17 +34,17 @@ export type WriteOutcome =
 
 type DeliveryChange = PgUpdateSetSource<typeof deliveries>;
 
-/** 넘겨받기 한 번에 회수하는 최대 건수. */
+/** 리스 만료 회수(Takeover) 1회당 최대 처리 건수. */
 const TAKEOVER_BATCH = 500;
 
 /**
- * Delivery 상태 전이를 모은 저장소 (ADR-0032). 모든 전이는 조건부 UPDATE이며,
- * IN_FLIGHT에서 나가는 쓰기에는 owner와 시도 번호 조건(펜싱)을 건다 (ADR-0004).
+ * Delivery 상태 전이 저장소 (ADR-0032). 모든 전이는 조건부 UPDATE로 수행하며,
+ * IN_FLIGHT에서 전이하는 쓰기에는 owner와 attempts 조건(펜싱 토큰)을 부여한다 (ADR-0004).
  */
 export class DeliveryRepository {
   /**
-   * claimDb는 작업 루프 전용 연결이다. 결과 기록은 알림 행 잠금을 차례로 기다리므로, 같은 풀을 쓰면
-   * 그 트랜잭션들이 연결을 붙잡는 동안 루프가 꺼내지 못하고 토큰이 넘쳐 버려진다.
+   * claimDb는 발송 폴링 루프 전용 커넥션이다. 결과 기록 트랜잭션이 알림 행 잠금을 대기하는 동안에도
+   * 점유(claim) 쿼리가 커넥션 풀 고갈로 지연되지 않도록 분리한다.
    */
   constructor(
     private readonly db: Db,
@@ -53,10 +53,10 @@ export class DeliveryRepository {
   ) {}
 
   /**
-   * 꺼내기 (ADR-0011, 0012, 0017). 토큰을 받은 개수만큼만 꺼낸다.
-   * 긴급 먼저, 먼저 시작한 알림 먼저, 같은 알림 안에서는 원래 순서. 재시도 건은 원래 자리로 돌아온다.
-   * SENDING 알림의 건만 집으므로, 취소 1단계가 커밋된 뒤에 시작한 claim 쿼리는 그 알림의 건을 집지 않는다 (ADR-0017).
-   * 꺼낸 건에는 기한(지금 + leaseMs)을 적는다. 기한이 지나도록 결과가 기록되지 않으면 다른 워커가 넘겨받는다 (ADR-0004).
+   * 발송 대상 점유(claim, ADR-0011, 0012, 0017). 획득한 토큰 수만큼만 점유한다.
+   * 우선순위(priority) → 발송 시작 순번(start_seq) → 생성 순번(id) 순으로 정렬하며,
+   * SENDING 상태 알림의 Delivery만 점유하여 취소 1단계 커밋 이후 신규 점유를 차단한다 (ADR-0017).
+   * 점유 시 만료 시각(lease_until = now + leaseMs)을 기록하며, 만료 시 다른 워커가 회수한다 (ADR-0004).
    */
   async claim(limit: number, leaseMs: number): Promise<ClaimedDelivery[]> {
     const picked = this.claimDb.$with('picked').as(
@@ -103,11 +103,11 @@ export class DeliveryRepository {
         alarmStartedAt: alarms.startedAt,
       });
 
-    // UPDATE ... RETURNING은 꺼낸 순서를 지키지 않는다. 보내는 순서를 꺼낸 순서와 맞춘다.
+    // UPDATE ... RETURNING은 정렬 순서를 보장하지 않으므로 점유 우선순위 순으로 재정렬한다.
     return claimed.sort((a, b) => a.priority - b.priority || a.id - b.id);
   }
 
-  /** 발송 결과 기록. 넘겨받힌 뒤 늦게 도착한 기록은 펜싱 조건에 걸려 반영되지 않는다. */
+  /** 발송 결과 기록. 리스 만료 회수 이후 뒤늦게 도착한 결과는 펜싱 조건에 의해 거부된다. */
   recordSend(
     delivery: ClaimedDelivery,
     decision: SendDecision,
@@ -161,7 +161,7 @@ export class DeliveryRepository {
     );
   }
 
-  /** 확실히 보내지 않은 건을 반납한다. 발송 직전 확인 실패, 정상 종료 (ADR-0004, 0007). */
+  /** 미전송 건 반납 (발송 직전 리스 검증 실패 또는 정상 종료 시, ADR-0004, 0007). */
   releaseUnsent(delivery: ClaimedDelivery): Promise<WriteOutcome> {
     return this.writeLocked(
       delivery.alarmId,
@@ -174,9 +174,9 @@ export class DeliveryRepository {
   }
 
   /**
-   * 넘겨받기 (ADR-0004). 기한이 지나도록 결과가 기록되지 않은 IN_FLIGHT 건을 결과 미확정으로 돌리고 owner를 비운다.
-   * owner를 비우므로 원래 주인이 늦게 보내는 결과 기록은 펜싱에 걸린다.
-   * 보냈는지 모르므로 바로 다시 보내지 않고, 넘겨받은 시각 + 조회 대기 뒤에 결과 확인을 한다 (ADR-0002).
+   * 리스 만료 회수(Takeover, ADR-0004). lease_until이 경과한 IN_FLIGHT 건을 UNCONFIRMED로 전이하고 owner를 해제한다.
+   * owner가 해제되므로 기존 워커의 지연 쓰기는 펜싱 조건에서 거부된다.
+   * 전송 여부를 단정할 수 없으므로 즉시 재발송하지 않고 reconcile_after 경과 후 발송 내역 조회(상태 확정)를 수행한다 (ADR-0002).
    */
   async takeOverExpired(reconcileDelayMs: number): Promise<number> {
     const expired = this.db.$with('expired').as(
@@ -213,8 +213,8 @@ export class DeliveryRepository {
   }
 
   /**
-   * 결과 확인 대상 꺼내기. 조회는 읽기만 하므로 겹쳐도 해롭지 않다 (ADR-0032).
-   * 조회 중 죽어도 leaseMs 뒤 다른 워커가 다시 집는다.
+   * 발송 내역 조회(상태 확정) 대상 점유 (ADR-0032).
+   * 점유 후 워커가 중단되더라도 leaseMs 경과 후 다른 워커가 재점유한다.
    */
   async claimReconcile(
     limit: number,
@@ -255,8 +255,8 @@ export class DeliveryRepository {
   }
 
   /**
-   * 결과 확인 결과 기록 (ADR-0002, 0017). decide는 잠금 아래에서 읽은 알림 상태로 결정을 내린다.
-   * 기록이 없고 알림이 취소 중이면 다시 보내지 않고 CANCELED로 둔다.
+   * 발송 내역 조회(상태 확정) 결과 기록 (ADR-0002, 0017).
+   * 잠금 하에서 읽은 알림 상태가 취소 중(CANCELING)이고 발송 내역이 없으면 재발송 대신 CANCELED로 전이한다.
    */
   async recordReconcile(
     item: ReconcileItem,
@@ -280,7 +280,7 @@ export class DeliveryRepository {
               status: DeliveryStatus.SENT,
               messageId: decision.messageId,
               sentAt: new Date(decision.sentAt),
-              // 한 번 확인된 중복 표시는 지우지 않는다.
+              // 한 번 감지된 중복 발송 플래그는 유지한다.
               ...(decision.duplicate ? { duplicateDetected: true } : {}),
               lastErrorCode: null,
               lastErrorMessage: null,
@@ -308,7 +308,7 @@ export class DeliveryRepository {
     return { decision, outcome };
   }
 
-  /** 펜싱에 걸린 뒤 실제 중복이 확인되면 표시한다 (ADR-0004). 상태와 관계없이 남긴다. */
+  /** 펜싱 거부 이후 실제 중복 발송이 확인된 경우 플래그를 기록한다 (ADR-0004). */
   async markDuplicate(deliveryId: number): Promise<void> {
     await this.db
       .update(deliveries)
@@ -316,7 +316,7 @@ export class DeliveryRepository {
       .where(eq(deliveries.id, deliveryId));
   }
 
-  /** IN_FLIGHT에서 나가는 쓰기의 조건. 이 워커가 이 시도로 쥔 건일 때만 반영한다 (ADR-0004). */
+  /** IN_FLIGHT 상태 전이 펜싱 조건 (현재 워커 ID 및 시도 번호 일치 검증, ADR-0004). */
   private inFlightFence(delivery: ClaimedDelivery): SQL {
     return and(
       eq(deliveries.id, delivery.id),
@@ -327,8 +327,7 @@ export class DeliveryRepository {
   }
 
   /**
-   * 알림 행을 잠근 트랜잭션에서 fence에 맞는 행에만 change를 반영하고, 같은 트랜잭션에서 완료 판정을 한다 (ADR-0018).
-   * change는 잠금 아래에서 읽은 알림 상태로 정한다.
+   * 알림 행 잠금 트랜잭션 내에서 펜싱 조건을 만족하는 행에 변경을 반영하고 완료 판정을 수행한다 (ADR-0018).
    */
   private async writeLocked(
     alarmId: string,
@@ -346,8 +345,8 @@ export class DeliveryRepository {
 }
 
 /**
- * 대기로 되돌리는 변경. 알림이 SENDING이 아니면 PENDING 대신 CANCELED로 둔다 (ADR-0017).
- * 정리가 끝난 뒤 PENDING이 다시 생기면 영원히 꺼내지지 않기 때문이다. alarmStatus는 잠금 아래에서 읽은 값이다.
+ * PENDING 복귀 처리. 알림 상태가 SENDING이 아니면 PENDING 대신 CANCELED로 전이한다 (ADR-0017).
+ * 취소 정리 완료 후 새로운 PENDING이 생성되어 미처리 상태로 남는 것을 방지한다.
  */
 function backToPending(
   alarmStatus: AlarmStatus,

@@ -23,11 +23,11 @@ export interface PoolTimeouts {
 }
 
 /**
- * timeouts를 주면 연결을 얻거나 쿼리 응답을 기다리다 끝없이 멈추지 않는다. api는 요청마다 반드시 응답해야 하므로 준다 (ADR-0039).
- * worker는 주지 않는다. 멈춘 워커가 쥔 알림 행 잠금이 풀리기를 기다리는 것이 정상이라, 시간 제한에 걸리면 멀쩡한 워커의 결과 기록이 실패한다.
+ * timeouts 설정 시 커넥션 획득 및 쿼리 응답 대기 시간에 상한을 둔다. api 프로세스는 요청 응답 보장을 위해 지정한다 (ADR-0039).
+ * worker 프로세스는 멈춘 워커의 알림 행 잠금 해제를 대기해야 하므로 클라이언트 쿼리 타임아웃을 두지 않는다.
  *
- * idleInTransactionMs는 서버 쪽 한도다. 트랜잭션 도중 클라이언트가 그 시간 넘게 다음 쿼리를 보내지 않으면
- * Postgres가 세션을 끝내고 잠금을 푼다. 트랜잭션 도중 멈춘 프로세스가 행 잠금을 쥐고 남지 않게 한다 (ADR-0004).
+ * idleInTransactionMs는 PostgreSQL 서버의 idle_in_transaction_session_timeout 설정값이다.
+ * 트랜잭션 도중 멈춘 프로세스가 행 잠금을 점유한 채 방치되지 않도록 세션을 강제 종료한다 (ADR-0004).
  */
 export function createPool(
   connectionString: string,

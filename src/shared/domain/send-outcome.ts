@@ -1,10 +1,10 @@
 import { BackoffOptions, retryDelayMs } from './retry-policy';
 
 /**
- * 외부 발송 요청 한 번의 결과. "보냈는지 모르는" 경우를 따로 구분한다 (ADR-0002, 0037).
- * - not_sent: 연결 단계에서 실패해 요청이 나가지 않았다.
- * - withheld: 쓰기 직전 확인에 걸려 우리가 보내지 않았다. 외부 서비스와는 관계없다 (ADR-0004).
- * - unknown: 요청을 쓴 뒤에 실패했다(타임아웃, 응답 도중 끊김, 게이트웨이 오류).
+ * 단건 외부 발송 요청의 결과 분류. 전송 여부 미확정(unknown) 상태를 별도로 구분한다 (ADR-0002, 0037).
+ * - not_sent: 커넥션 수립 단계에서 실패하여 요청 바이트가 전송되지 않음.
+ * - withheld: 소켓 쓰기 직전 가드 검증 실패로 발송을 보류함 (ADR-0004).
+ * - unknown: 요청 전송 이후 응답을 받지 못함 (타임아웃, 연결 유실, 502/503/504 등).
  */
 export type SendResult =
   | { kind: 'accepted'; messageId: string }
@@ -15,7 +15,7 @@ export type SendResult =
   | { kind: 'withheld' }
   | { kind: 'unknown'; code: string; message: string };
 
-/** 발송 결과를 받은 IN_FLIGHT Delivery가 갈 곳 (ADR-0014, 0032). */
+/** 발송 결과에 따른 IN_FLIGHT Delivery의 후속 상태 결정 (ADR-0014, 0032). */
 export type SendDecision =
   | { kind: 'sent'; messageId: string }
   | { kind: 'failed'; code: string; message: string }
@@ -28,8 +28,8 @@ export interface RetryOptions extends BackoffOptions {
 }
 
 /**
- * isOutage: 서킷 브레이커가 장애로 판단한 상태(열림)다. 이 동안의 5xx·연결 오류·응답 없음은 그 건이 아니라 외부 장애 탓이므로
- * 시도 횟수에 세지 않는다. 그래야 장애가 길어져도 재시도를 다 써서 누락되는 건이 없다 (ADR-0014).
+ * isOutage: 서킷 브레이커 OPEN(외부 장애) 여부. 장애 구간의 5xx·연결 오류·타임아웃은 개별 건의 결함이 아니므로
+ * 시도 횟수(attempts)에서 차감하여 장애 장기화 시 재시도 소진으로 인한 누락을 방지한다 (ADR-0014).
  */
 export function decideAfterSend(
   result: SendResult,
@@ -45,17 +45,17 @@ export function decideAfterSend(
     case 'accepted':
       return { kind: 'sent', messageId: result.messageId };
     case 'rejected':
-      // 400은 영구 실패다. 재시도해도 결과가 같다.
+      // 400 응답은 비재시도성 영구 실패로 처리한다.
       return { kind: 'failed', code: result.code, message: result.message };
     case 'rate_limited':
-      // 그 건의 문제가 아니라 우리 속도의 문제이므로 시도 횟수에 세지 않는다.
+      // 처리량 제한(429)은 시도 횟수에 포함하지 않고 재큐잉한다.
       return {
         kind: 'requeue_uncounted',
         code: 'RATE_LIMITED',
         message: `retry-after ${result.retryAfterSec}s`,
       };
     case 'withheld':
-      // 나가지 않았고 그 건의 문제도 아니다. 워커는 이 결과를 꺼낼 때 확인에 걸린 건처럼 반납한다.
+      // 전송 전 가드에서 보류된 건이므로 시도 횟수를 차감하고 반납한다.
       return {
         kind: 'requeue_uncounted',
         code: 'SEND_GUARD',
@@ -88,7 +88,7 @@ export function decideAfterSend(
   }
 }
 
-/** 장애 동안의 실패. 보냈는지 모르는 건은 조회로 확인해야 하므로 결과 미확정으로 두되 횟수만 되돌린다. */
+/** 장애 구간 실패 처리. 전송 여부 미확정(unknown) 건은 발송 내역 조회를 위해 UNCONFIRMED로 전이하되 시도 횟수만 차감한다. */
 function outageDecision(result: BreakerFailure): SendDecision {
   const isUnknown = result.kind === 'unknown';
   if (isUnknown) {
@@ -112,7 +112,7 @@ type BreakerFailure = Extract<
   { kind: 'server_error' | 'not_sent' | 'unknown' }
 >;
 
-/** 서킷 브레이커가 장애 신호로 세는 결과: 5xx, 연결 오류, 타임아웃 (ADR-0014). */
+/** 서킷 브레이커가 집계하는 장애 결과 유형: 5xx, 연결 오류, 타임아웃 (ADR-0014). */
 export function isBreakerFailure(result: SendResult): result is BreakerFailure {
   return (
     result.kind === 'server_error' ||
@@ -131,7 +131,7 @@ export type LookupResult =
   | { kind: 'ok'; messages: LookedUpMessage[] }
   | { kind: 'error'; code: string; message: string };
 
-/** 결과 확인을 마친 UNCONFIRMED Delivery가 갈 곳 (ADR-0002, 0017, 0032). */
+/** 발송 내역 조회(상태 확정) 이후 UNCONFIRMED Delivery의 후속 상태 결정 (ADR-0002, 0017, 0032). */
 export type ReconcileDecision =
   | { kind: 'sent'; messageId: string; sentAt: string; duplicate: boolean }
   | { kind: 'canceled' }
@@ -139,7 +139,7 @@ export type ReconcileDecision =
   | { kind: 'resend' }
   | { kind: 'retry_lookup'; delayMs: number };
 
-/** 결과 확인 대상 Delivery의 진행 상황. lookupFailures는 이번 결과 미확정 동안 연달아 실패한 조회 수다. */
+/** 상태 확정 대상 Delivery의 진행 상태. lookupFailures는 현재 UNCONFIRMED 상태에서 연속 실패한 조회 횟수다. */
 export interface LookupProgress {
   attempts: number;
   lookupFailures: number;

@@ -13,13 +13,13 @@ import { durable } from '../runtime/loop-utils';
 import { PollingLoop, Tick } from '../runtime/polling-loop';
 import { retryOptions } from '../runtime/retry-options';
 
-/** 한 바퀴에 결과를 확인하는 최대 건수. */
+/** 폴링 주기당 상태 확정 최대 처리 건수. */
 const RECONCILE_BATCH = 20;
 
 /**
- * 결과 확인 (ADR-0002). 보냈는지 모르는 건을 clientRef로 조회해 확정한다.
- * 기록이 있으면 SENT, 없으면 PENDING으로 되돌려 같은 꺼내기 경로로 다시 보낸다(토큰과 우선순위를 지킨다).
- * 조회가 실패하면 다시 보내지 않고 조회만 다시 한다.
+ * 발송 내역 조회 및 상태 확정(Reconciliation, ADR-0002). 결과 미확정(UNCONFIRMED) 건을 clientRef로 조회해 확정한다.
+ * 발송 기록이 존재하면 SENT로, 없으면 PENDING으로 복귀시켜 일반 발송 경로(토큰 버킷 및 우선순위 적용)로 재발송한다.
+ * 조회 자체가 실패한 경우 재발송하지 않고 조회만 재시도한다.
  */
 export class Reconciler {
   private readonly loop: PollingLoop;

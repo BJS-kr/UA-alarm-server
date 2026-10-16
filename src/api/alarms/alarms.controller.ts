@@ -51,7 +51,7 @@ const PROBLEM = {
     },
   },
 };
-const UUID_PROBLEM = { ...PROBLEM, description: 'ID가 UUID가 아님' };
+const UUID_PROBLEM = { ...PROBLEM, description: '유효하지 않은 UUID 형식' };
 
 @ApiTags('alarms')
 @ApiExtraModels(ProblemView)
@@ -59,12 +59,12 @@ const UUID_PROBLEM = { ...PROBLEM, description: 'ID가 UUID가 아님' };
 @ApiUnauthorizedResponse(PROBLEM)
 @ApiServiceUnavailableResponse({
   ...PROBLEM,
-  description:
-    'DB에 연결할 수 없거나 정해 둔 시간 안에 답이 없음. 잠시 뒤 다시 시도한다 (ADR-0039)',
+  description: 'DB 연결 실패 또는 쿼리 타임아웃 (ADR-0039)',
 })
 @ApiInternalServerErrorResponse({
   ...PROBLEM,
-  description: '예상하지 못한 오류. 내부 정보 없이 traceId만 준다 (ADR-0019)',
+  description:
+    '예기치 않은 서버 내부 오류 (내부 정보 노출 없이 traceId만 반환, ADR-0019)',
 })
 @Controller('v1/alarms')
 export class AlarmsController {
@@ -74,7 +74,8 @@ export class AlarmsController {
   @HttpCode(201)
   @ApiOperation({
     summary: '알림 생성',
-    description: '생성만으로는 발송되지 않는다. 발송은 /send로 시작한다.',
+    description:
+      'CREATED 상태의 알림을 생성한다. 실제 발송은 POST /v1/alarms/:id/send 호출 시 시작된다.',
   })
   @ApiCreatedResponse({ type: AlarmView })
   @ApiBadRequestResponse(PROBLEM)
@@ -92,9 +93,9 @@ export class AlarmsController {
 
   @Get()
   @ApiOperation({
-    summary: '알림 목록',
+    summary: '알림 목록 조회',
     description:
-      '최신순, 커서 페이지네이션 (ADR-0024). 건수는 단건 조회에서 본다.',
+      '최신순(UUIDv7 내림차순) 커서 페이지네이션으로 알림 목록을 조회한다 (ADR-0024). 상태별 Delivery 집계는 단건 조회에서 반환한다.',
   })
   @ApiOkResponse({ type: AlarmListView })
   @ApiBadRequestResponse(PROBLEM)
@@ -104,8 +105,8 @@ export class AlarmsController {
 
   @Get(':id')
   @ApiOperation({
-    summary: '알림 단건',
-    description: '상태별 Delivery 건수를 조회 시점에 세어 함께 준다.',
+    summary: '알림 단건 조회',
+    description: '알림 상세 정보와 상태별 Delivery 집계 건수를 반환한다.',
   })
   @ApiOkResponse({ type: AlarmDetailView })
   @ApiBadRequestResponse(UUID_PROBLEM)
@@ -116,12 +117,15 @@ export class AlarmsController {
 
   @Post(':id/send')
   @ApiOperation({
-    summary: '발송 시작',
+    summary: '알림 발송 시작',
     description:
-      'CREATED → SENDING. 이미 SENDING이면 202, COMPLETED면 200, 취소된 알림이면 409 (ADR-0016, 0020).',
+      'CREATED → SENDING 전이. 이미 SENDING/CANCELING이면 202, COMPLETED면 200, CANCELED면 409를 반환한다 (ADR-0016, ADR-0020).',
   })
-  @ApiAcceptedResponse({ type: AlarmView, description: '발송이 진행 중' })
-  @ApiOkResponse({ type: AlarmView, description: '이미 완료됨' })
+  @ApiAcceptedResponse({
+    type: AlarmView,
+    description: '발송 시작 또는 진행 중',
+  })
+  @ApiOkResponse({ type: AlarmView, description: '이미 발송 완료된 알림' })
   @ApiBadRequestResponse(UUID_PROBLEM)
   @ApiNotFoundResponse(PROBLEM)
   @ApiConflictResponse(PROBLEM)
@@ -138,15 +142,15 @@ export class AlarmsController {
 
   @Post(':id/cancel')
   @ApiOperation({
-    summary: '발송 취소',
+    summary: '알림 발송 취소',
     description:
-      'CREATED → CANCELED(200), SENDING → CANCELING(202). 완료된 알림은 409. 이미 나간 건은 되돌리지 않는다 (ADR-0017).',
+      'CREATED → CANCELED(200), SENDING → CANCELING(202) 전이. 이미 완료된 알림(COMPLETED)은 409를 반환하며 기발송 건은 취소되지 않는다 (ADR-0017).',
   })
   @ApiAcceptedResponse({
     type: AlarmView,
-    description: '이미 나가던 건을 정리하는 중',
+    description: '발송 진행 중인 건의 정리 후 취소 진행 중 (CANCELING)',
   })
-  @ApiOkResponse({ type: AlarmView, description: '취소가 끝남' })
+  @ApiOkResponse({ type: AlarmView, description: '취소 완료 (CANCELED)' })
   @ApiBadRequestResponse(UUID_PROBLEM)
   @ApiNotFoundResponse(PROBLEM)
   @ApiConflictResponse(PROBLEM)
@@ -163,13 +167,14 @@ export class AlarmsController {
 
   @Get(':id/deliveries')
   @ApiOperation({
-    summary: '수신자별 결과',
-    description: '수신자 ID 순, 커서 페이지네이션. 상태로 거를 수 있다.',
+    summary: '수신자별 발송 내역 조회',
+    description:
+      '수신자 ID 오름차순 커서 페이지네이션으로 발송 내역을 조회한다. status 필터를 지원한다.',
   })
   @ApiOkResponse({ type: DeliveryListView })
   @ApiBadRequestResponse({
     ...PROBLEM,
-    description: 'ID가 UUID가 아니거나 커서·쿼리가 틀림',
+    description: '유효하지 않은 UUID 형식 또는 잘못된 쿼리/커서 파라미터',
   })
   @ApiNotFoundResponse(PROBLEM)
   deliveries(

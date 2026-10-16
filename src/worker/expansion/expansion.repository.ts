@@ -16,7 +16,7 @@ export interface ExpansionTask {
   startSeq: number;
 }
 
-/** 수신자 펼치기의 저장소 (ADR-0006). 점유 방식은 ADR-0004와 같다: 담당(owner)과 기한, 펜싱. */
+/** 수신자 확장(Expansion) 저장소 (ADR-0006). 리스 및 펜싱 기반 점유 방식을 사용한다 (ADR-0004). */
 export class ExpansionRepository {
   constructor(
     private readonly db: Db,
@@ -24,9 +24,9 @@ export class ExpansionRepository {
   ) {}
 
   /**
-   * 펼치기 작업 하나를 쥔다. 먼저 시작한 알림부터 (ADR-0012).
-   * 아무도 쥐지 않았거나 기한이 지난 작업에 더해, 이미 내가 쥔 작업도 다시 집는다.
-   * 페이지 커밋의 응답만 유실되면 재시도가 "이미 들어간 페이지"로 보고 멈추는데, 그 작업이 내 이름으로 남아도 이어 가기 위해서다.
+   * 수신자 확장 대상 알림 1건을 발송 시작 순번(start_seq) 순으로 점유한다 (ADR-0012).
+   * 미점유 또는 리스 만료 건뿐 아니라 현재 워커가 이미 점유 중인 건도 재점유할 수 있도록 허용하여,
+   * 페이지 커밋 직후 응답 유실로 루프가 재진입하더라도 리스 만료 대기 없이 이어서 처리한다.
    */
   async claim(leaseMs: number): Promise<ExpansionTask | undefined> {
     const next = this.db
@@ -59,13 +59,13 @@ export class ExpansionRepository {
         startSeq: alarms.startSeq,
       });
 
-    // SENDING 알림에는 발송 시작 때 매긴 시작 순번이 있다.
+    // SENDING 알림에는 발송 시작 시 부여된 start_seq가 존재한다.
     return task && { ...task, startSeq: task.startSeq! };
   }
 
   /**
-   * 기한을 지금 + leaseMs로 연장한다. 알림이 아직 SENDING이고 내가 담당일 때만 반영된다.
-   * false면 취소됐거나 넘겨받힌 것이므로 펼치기를 멈춘다 (ADR-0004, 0017).
+   * 점유 리스를 now + leaseMs로 갱신한다. 알림이 SENDING 상태이고 현재 워커가 소유자일 때만 반영된다.
+   * false 반환 시 취소되었거나 다른 워커에 인계된 것이므로 확장을 중단한다 (ADR-0004, 0017).
    */
   async renew(task: ExpansionTask, leaseMs: number): Promise<boolean> {
     const renewed = await this.db
@@ -78,9 +78,8 @@ export class ExpansionRepository {
   }
 
   /**
-   * 다시 해도 안 되는 실패로 펼치기를 포기하고 알림을 취소 중으로 돌린다 (ADR-0006, 0017).
-   * 이미 나간 건은 그대로 두고, 남은 건은 취소 2단계(대기 건 정리)가 CANCELED로 바꾼다.
-   * 취소 이유와 마지막 오류를 남겨 운영자가 사람이 취소한 것과 구별하게 한다. 이미 취소됐거나 넘겨받혔으면 false다.
+   * 영구 오류로 인해 수신자 확장을 중단하고 알림을 CANCELING(EXPANSION_FAILED)으로 전이한다 (ADR-0006, 0017).
+   * 기발송 건은 유지되며 미발송 PENDING 건은 취소 2단계에서 CANCELED로 정리된다.
    */
   async abandon(
     task: ExpansionTask,
@@ -102,7 +101,7 @@ export class ExpansionRepository {
     return abandoned.length > 0;
   }
 
-  /** 정상 종료할 때 담당을 내려놓는다. 다른 워커가 기한을 기다리지 않고 이어 간다 (ADR-0007). */
+  /** 정상 종료 시 점유를 해제하여 다른 워커가 리스 만료 대기 없이 이어받도록 한다 (ADR-0007). */
   async release(task: ExpansionTask): Promise<void> {
     await this.db
       .update(alarms)
@@ -111,8 +110,8 @@ export class ExpansionRepository {
   }
 
   /**
-   * 한 페이지의 Delivery를 넣고 다음 커서를 저장한다. 호출하는 쪽이 알림 행을 잠근 트랜잭션에서 부른다.
-   * (알림, 수신자) 유일 제약이 있어 같은 페이지를 다시 넣어도 중복 행이 생기지 않는다.
+   * 한 페이지의 Delivery를 삽입하고 다음 커서를 저장한다 (알림 행 잠금 트랜잭션 내에서 호출).
+   * (alarm_id, recipient_id) UNIQUE 제약과 ON CONFLICT DO NOTHING으로 재시도 시 중복 삽입을 방지한다.
    */
   async savePage(
     tx: Tx,
@@ -146,7 +145,7 @@ export class ExpansionRepository {
       );
   }
 
-  /** 아직 펼치는 중이고 내가 담당인 그 알림 */
+  /** SENDING 상태이면서 미완료이고 현재 워커가 점유 중인 알림 조건 */
   private myTask(task: ExpansionTask) {
     return and(
       eq(alarms.id, task.alarmId),

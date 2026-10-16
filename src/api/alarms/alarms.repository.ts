@@ -111,8 +111,8 @@ export class AlarmsRepository {
   }
 
   /**
-   * CREATED → SENDING. 이 문장이 전이했으면 바뀐 행을, 아니면 undefined를 돌려준다.
-   * 긴급 알림은 같은 트랜잭션에서 수신자 정의로 Delivery를 바로 만든다. 펼치기가 없다 (ADR-0011).
+   * CREATED → SENDING 전이. 전이 성공 시 갱신된 행을, 실패 시 undefined를 반환한다.
+   * 긴급 알림은 동일 트랜잭션에서 수신자 목록으로 Delivery를 즉시 생성하므로 별도의 수신자 확장(Expansion) 단계가 없다 (ADR-0011).
    */
   startSending(id: string): Promise<AlarmRow | undefined> {
     return this.db.transaction(async (tx) => {

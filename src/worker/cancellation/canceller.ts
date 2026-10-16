@@ -10,8 +10,8 @@ import { PollingLoop, Tick } from '../runtime/polling-loop';
 import { CancellationRepository } from './cancellation.repository';
 
 /**
- * 취소 2단계: 대기 건 정리 (ADR-0017). API는 알림을 CANCELING으로만 바꾸고 바로 응답하며,
- * 정리는 워커가 펼치기와 같은 점유 방식으로 쥐고 한다. API가 1단계 직후 죽어도 정리는 이어진다.
+ * 취소 2단계: PENDING Delivery 일괄 취소 처리 (ADR-0017).
+ * API는 알림을 CANCELING으로만 전이하여 즉시 응답하고, 실제 PENDING 정리는 워커가 리스 기반으로 점유해 수행한다.
  */
 export class Canceller {
   private readonly loop: PollingLoop;

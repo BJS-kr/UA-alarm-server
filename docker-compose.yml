@@ -1,5 +1,5 @@
-# docker compose up 한 번으로 전체가 뜬다 (ADR-0025).
-# 비밀번호와 API 키는 개발용 값이다. 운영에서는 같은 이미지에 환경변수만 바꿔 배포한다 (ADR-0030).
+# docker compose up 단일 명령으로 전체 스택을 기동한다 (ADR-0025).
+# 비밀번호와 API 키는 로컬 개발용 기본값이며, 운영 환경에서는 환경변수로 주입한다 (ADR-0030).
 name: alarm
 
 x-app: &app
@@ -30,7 +30,7 @@ services:
       - ./docker/postgres/init.sh:/docker-entrypoint-initdb.d/10-init.sh:ro
       - pgdata:/var/lib/postgresql
     healthcheck:
-      # 초기화 중의 임시 서버는 TCP를 열지 않으므로, TCP로 확인해야 init 스크립트가 끝난 뒤에 healthy가 된다.
+      # 초기화 중의 임시 서버는 TCP 소켓을 열지 않으므로, init 스크립트 완료 후 healthy가 되도록 TCP(127.0.0.1)로 확인한다.
       test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U postgres -d alarm']
       interval: 2s
       timeout: 3s
@@ -39,7 +39,7 @@ services:
 
   mock:
     image: ghcr.io/us-all/backend-assignment-api:1.2
-    # 이미지에 내장된 GET /health 헬스체크를 기동 순서에만 쓴다 (ADR-0014).
+    # 이미지 내장 GET /health 헬스체크는 기동 순서 제어에만 사용한다 (ADR-0014).
     restart: unless-stopped
 
   migrate:
@@ -59,13 +59,19 @@ services:
     environment:
       <<: *app-env
       PORT: '3000'
-      # 개발용 기본값이다. 다른 곳에 띄울 때는 API_KEY 환경변수로 바꾼다 (ADR-0033).
+      # 개발용 기본값이며 API_KEY 환경변수로 재정의할 수 있다 (ADR-0033).
       API_KEY: ${API_KEY:-dev-api-key}
     ports:
-      # 이 머신에서만 받는다. 같은 네트워크의 다른 사람이 개발용 키로 발송하지 못하게 한다.
+      # 로컬 루프백(127.0.0.1)에만 바인딩하여 외부 네트워크 노출을 차단한다.
       - '127.0.0.1:3000:3000'
     healthcheck:
-      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:9100/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:9100/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -77,10 +83,16 @@ services:
       <<: *app-env
     deploy:
       replicas: 2
-    # 진행 중인 요청(최대 10초)을 마무리할 시간. Docker 기본값 10초로는 잘린다 (ADR-0007).
+    # 인플라이트 요청(최대 10초)을 정상 마무리하기 위한 종료 유예 시간 (ADR-0007).
     stop_grace_period: 30s
     healthcheck:
-      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:9100/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:9100/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
       interval: 5s
       timeout: 3s
       retries: 6
@@ -97,7 +109,7 @@ services:
       postgres:
         condition: service_healthy
 
-  # 끝단 시나리오 실행기. scripts/e2e.sh가 쓴다 (ADR-0035).
+  # E2E 시나리오 실행 컨테이너 (scripts/e2e.sh에서 사용, ADR-0035).
   e2e:
     profiles: ['e2e']
     build:

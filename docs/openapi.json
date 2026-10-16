@@ -3,7 +3,7 @@
   "paths": {
     "/v1/alarms": {
       "post": {
-        "description": "생성만으로는 발송되지 않는다. 발송은 /send로 시작한다.",
+        "description": "CREATED 상태의 알림을 생성한다. 실제 발송은 POST /v1/alarms/:id/send 호출 시 시작된다.",
         "operationId": "AlarmsController_create",
         "parameters": [],
         "requestBody": {
@@ -58,7 +58,7 @@
             }
           },
           "500": {
-            "description": "예상하지 못한 오류. 내부 정보 없이 traceId만 준다 (ADR-0019)",
+            "description": "예기치 않은 서버 내부 오류 (내부 정보 노출 없이 traceId만 반환, ADR-0019)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -68,7 +68,7 @@
             }
           },
           "503": {
-            "description": "DB에 연결할 수 없거나 정해 둔 시간 안에 답이 없음. 잠시 뒤 다시 시도한다 (ADR-0039)",
+            "description": "DB 연결 실패 또는 쿼리 타임아웃 (ADR-0039)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -84,12 +84,10 @@
           }
         ],
         "summary": "알림 생성",
-        "tags": [
-          "alarms"
-        ]
+        "tags": ["alarms"]
       },
       "get": {
-        "description": "최신순, 커서 페이지네이션 (ADR-0024). 건수는 단건 조회에서 본다.",
+        "description": "최신순(UUIDv7 내림차순) 커서 페이지네이션으로 알림 목록을 조회한다 (ADR-0024). 상태별 Delivery 집계는 단건 조회에서 반환한다.",
         "operationId": "AlarmsController_list",
         "parameters": [
           {
@@ -113,10 +111,7 @@
             "in": "query",
             "schema": {
               "type": "string",
-              "enum": [
-                "BULK",
-                "URGENT"
-              ]
+              "enum": ["BULK", "URGENT"]
             }
           },
           {
@@ -172,7 +167,7 @@
             }
           },
           "500": {
-            "description": "예상하지 못한 오류. 내부 정보 없이 traceId만 준다 (ADR-0019)",
+            "description": "예기치 않은 서버 내부 오류 (내부 정보 노출 없이 traceId만 반환, ADR-0019)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -182,7 +177,7 @@
             }
           },
           "503": {
-            "description": "DB에 연결할 수 없거나 정해 둔 시간 안에 답이 없음. 잠시 뒤 다시 시도한다 (ADR-0039)",
+            "description": "DB 연결 실패 또는 쿼리 타임아웃 (ADR-0039)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -197,15 +192,13 @@
             "bearer": []
           }
         ],
-        "summary": "알림 목록",
-        "tags": [
-          "alarms"
-        ]
+        "summary": "알림 목록 조회",
+        "tags": ["alarms"]
       }
     },
     "/v1/alarms/{id}": {
       "get": {
-        "description": "상태별 Delivery 건수를 조회 시점에 세어 함께 준다.",
+        "description": "알림 상세 정보와 상태별 Delivery 집계 건수를 반환한다.",
         "operationId": "AlarmsController_get",
         "parameters": [
           {
@@ -229,7 +222,7 @@
             }
           },
           "400": {
-            "description": "ID가 UUID가 아님",
+            "description": "유효하지 않은 UUID 형식",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -259,7 +252,7 @@
             }
           },
           "500": {
-            "description": "예상하지 못한 오류. 내부 정보 없이 traceId만 준다 (ADR-0019)",
+            "description": "예기치 않은 서버 내부 오류 (내부 정보 노출 없이 traceId만 반환, ADR-0019)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -269,7 +262,7 @@
             }
           },
           "503": {
-            "description": "DB에 연결할 수 없거나 정해 둔 시간 안에 답이 없음. 잠시 뒤 다시 시도한다 (ADR-0039)",
+            "description": "DB 연결 실패 또는 쿼리 타임아웃 (ADR-0039)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -284,15 +277,13 @@
             "bearer": []
           }
         ],
-        "summary": "알림 단건",
-        "tags": [
-          "alarms"
-        ]
+        "summary": "알림 단건 조회",
+        "tags": ["alarms"]
       }
     },
     "/v1/alarms/{id}/send": {
       "post": {
-        "description": "CREATED → SENDING. 이미 SENDING이면 202, COMPLETED면 200, 취소된 알림이면 409 (ADR-0016, 0020).",
+        "description": "CREATED → SENDING 전이. 이미 SENDING/CANCELING이면 202, COMPLETED면 200, CANCELED면 409를 반환한다 (ADR-0016, ADR-0020).",
         "operationId": "AlarmsController_send",
         "parameters": [
           {
@@ -306,7 +297,7 @@
         ],
         "responses": {
           "200": {
-            "description": "이미 완료됨",
+            "description": "이미 발송 완료된 알림",
             "content": {
               "application/json": {
                 "schema": {
@@ -316,7 +307,7 @@
             }
           },
           "202": {
-            "description": "발송이 진행 중",
+            "description": "발송 시작 또는 진행 중",
             "content": {
               "application/json": {
                 "schema": {
@@ -326,7 +317,7 @@
             }
           },
           "400": {
-            "description": "ID가 UUID가 아님",
+            "description": "유효하지 않은 UUID 형식",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -366,7 +357,7 @@
             }
           },
           "500": {
-            "description": "예상하지 못한 오류. 내부 정보 없이 traceId만 준다 (ADR-0019)",
+            "description": "예기치 않은 서버 내부 오류 (내부 정보 노출 없이 traceId만 반환, ADR-0019)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -376,7 +367,7 @@
             }
           },
           "503": {
-            "description": "DB에 연결할 수 없거나 정해 둔 시간 안에 답이 없음. 잠시 뒤 다시 시도한다 (ADR-0039)",
+            "description": "DB 연결 실패 또는 쿼리 타임아웃 (ADR-0039)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -391,15 +382,13 @@
             "bearer": []
           }
         ],
-        "summary": "발송 시작",
-        "tags": [
-          "alarms"
-        ]
+        "summary": "알림 발송 시작",
+        "tags": ["alarms"]
       }
     },
     "/v1/alarms/{id}/cancel": {
       "post": {
-        "description": "CREATED → CANCELED(200), SENDING → CANCELING(202). 완료된 알림은 409. 이미 나간 건은 되돌리지 않는다 (ADR-0017).",
+        "description": "CREATED → CANCELED(200), SENDING → CANCELING(202) 전이. 이미 완료된 알림(COMPLETED)은 409를 반환하며 기발송 건은 취소되지 않는다 (ADR-0017).",
         "operationId": "AlarmsController_cancel",
         "parameters": [
           {
@@ -413,7 +402,7 @@
         ],
         "responses": {
           "200": {
-            "description": "취소가 끝남",
+            "description": "취소 완료 (CANCELED)",
             "content": {
               "application/json": {
                 "schema": {
@@ -423,7 +412,7 @@
             }
           },
           "202": {
-            "description": "이미 나가던 건을 정리하는 중",
+            "description": "발송 진행 중인 건의 정리 후 취소 진행 중 (CANCELING)",
             "content": {
               "application/json": {
                 "schema": {
@@ -433,7 +422,7 @@
             }
           },
           "400": {
-            "description": "ID가 UUID가 아님",
+            "description": "유효하지 않은 UUID 형식",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -473,7 +462,7 @@
             }
           },
           "500": {
-            "description": "예상하지 못한 오류. 내부 정보 없이 traceId만 준다 (ADR-0019)",
+            "description": "예기치 않은 서버 내부 오류 (내부 정보 노출 없이 traceId만 반환, ADR-0019)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -483,7 +472,7 @@
             }
           },
           "503": {
-            "description": "DB에 연결할 수 없거나 정해 둔 시간 안에 답이 없음. 잠시 뒤 다시 시도한다 (ADR-0039)",
+            "description": "DB 연결 실패 또는 쿼리 타임아웃 (ADR-0039)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -498,15 +487,13 @@
             "bearer": []
           }
         ],
-        "summary": "발송 취소",
-        "tags": [
-          "alarms"
-        ]
+        "summary": "알림 발송 취소",
+        "tags": ["alarms"]
       }
     },
     "/v1/alarms/{id}/deliveries": {
       "get": {
-        "description": "수신자 ID 순, 커서 페이지네이션. 상태로 거를 수 있다.",
+        "description": "수신자 ID 오름차순 커서 페이지네이션으로 발송 내역을 조회한다. status 필터를 지원한다.",
         "operationId": "AlarmsController_deliveries",
         "parameters": [
           {
@@ -566,7 +553,7 @@
             }
           },
           "400": {
-            "description": "ID가 UUID가 아니거나 커서·쿼리가 틀림",
+            "description": "유효하지 않은 UUID 형식 또는 잘못된 쿼리/커서 파라미터",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -596,7 +583,7 @@
             }
           },
           "500": {
-            "description": "예상하지 못한 오류. 내부 정보 없이 traceId만 준다 (ADR-0019)",
+            "description": "예기치 않은 서버 내부 오류 (내부 정보 노출 없이 traceId만 반환, ADR-0019)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -606,7 +593,7 @@
             }
           },
           "503": {
-            "description": "DB에 연결할 수 없거나 정해 둔 시간 안에 답이 없음. 잠시 뒤 다시 시도한다 (ADR-0039)",
+            "description": "DB 연결 실패 또는 쿼리 타임아웃 (ADR-0039)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -621,16 +608,14 @@
             "bearer": []
           }
         ],
-        "summary": "수신자별 결과",
-        "tags": [
-          "alarms"
-        ]
+        "summary": "수신자별 발송 내역 조회",
+        "tags": ["alarms"]
       }
     }
   },
   "info": {
     "title": "Alarm Dispatcher API",
-    "description": "다수의 수신자에게 알림을 발송한다. 에러는 RFC 9457 Problem Details(application/problem+json)로 응답한다.",
+    "description": "대량/긴급 알림 발송 API. 오류 응답은 RFC 9457 Problem Details(application/problem+json) 형식을 따른다.",
     "version": "1.0",
     "contact": {}
   },
@@ -642,7 +627,7 @@
         "scheme": "bearer",
         "bearerFormat": "JWT",
         "type": "http",
-        "description": "고정 API 키 (ADR-0033)"
+        "description": "Bearer API 키 인증 (ADR-0033)"
       }
     },
     "schemas": {
@@ -656,10 +641,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "field",
-          "message"
-        ]
+        "required": ["field", "message"]
       },
       "ProblemView": {
         "type": "object",
@@ -678,7 +660,7 @@
               "/problems/internal-error",
               "/problems/service-unavailable"
             ],
-            "description": "에러 종류. 클라이언트는 이 값으로 분기한다"
+            "description": "오류 유형 식별자 URI"
           },
           "title": {
             "type": "string",
@@ -697,11 +679,11 @@
           },
           "traceId": {
             "type": "string",
-            "description": "같은 값이 서버 로그에 남는다",
+            "description": "요청 추적용 식별자 (서버 로그와 매핑)",
             "example": "4bf92f3577b34da6a3ce929d0e0e4736"
           },
           "errors": {
-            "description": "입력 검증 실패(400)일 때 필드별 오류",
+            "description": "요청 검증 실패(400) 시 필드별 상세 오류 목록",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/FieldErrorView"
@@ -709,56 +691,43 @@
           },
           "currentStatus": {
             "type": "string",
-            "description": "상태 충돌(409)일 때 현재 상태"
+            "description": "상태 전이 충돌(409) 시 현재 리소스 상태"
           }
         },
-        "required": [
-          "type",
-          "title",
-          "status",
-          "instance",
-          "traceId"
-        ]
+        "required": ["type", "title", "status", "instance", "traceId"]
       },
       "CreateAlarmRequest": {
         "type": "object",
         "properties": {
           "type": {
             "type": "string",
-            "enum": [
-              "BULK",
-              "URGENT"
-            ],
-            "description": "필수이며 기본값이 없다. 빠뜨리기만 해도 전체 발송이 되는 사고를 막는다."
+            "enum": ["BULK", "URGENT"],
+            "description": "알림 발송 유형 (URGENT | BULK). 기본값 없이 필수로 지정한다."
           },
           "title": {
             "type": "string",
             "minLength": 1,
             "maxLength": 100,
-            "description": "알림을 구별하는 관리용 이름. 외부로 발송되지 않는다."
+            "description": "알림 식별용 관리 제목 (외부 발송 본문에 포함되지 않음)"
           },
           "body": {
             "type": "string",
             "minLength": 1,
             "maxLength": 1000,
-            "description": "수신자에게 발송되는 본문"
+            "description": "수신자에게 발송되는 알림 본문"
           },
           "recipientIds": {
             "minItems": 1,
             "maxItems": 100,
             "uniqueItems": true,
-            "description": "URGENT 전용이며 필수다. BULK에 지정하면 거절한다.",
+            "description": "URGENT 알림의 대상 수신자 ID 목록 (BULK 알림에서는 지정 불가)",
             "type": "array",
             "items": {
               "type": "string"
             }
           }
         },
-        "required": [
-          "type",
-          "title",
-          "body"
-        ]
+        "required": ["type", "title", "body"]
       },
       "AlarmView": {
         "type": "object",
@@ -769,10 +738,7 @@
           },
           "type": {
             "type": "string",
-            "enum": [
-              "BULK",
-              "URGENT"
-            ]
+            "enum": ["BULK", "URGENT"]
           },
           "title": {
             "type": "string"
@@ -782,13 +748,7 @@
           },
           "status": {
             "type": "string",
-            "enum": [
-              "CREATED",
-              "SENDING",
-              "CANCELING",
-              "CANCELED",
-              "COMPLETED"
-            ]
+            "enum": ["CREATED", "SENDING", "CANCELING", "CANCELED", "COMPLETED"]
           },
           "createdAt": {
             "type": "string",
@@ -806,17 +766,14 @@
           },
           "cancelReason": {
             "type": "string",
-            "enum": [
-              "REQUESTED",
-              "EXPANSION_FAILED"
-            ],
+            "enum": ["REQUESTED", "EXPANSION_FAILED"],
             "nullable": true,
-            "description": "REQUESTED는 취소 요청, EXPANSION_FAILED는 수신자 조회가 다시 해도 안 되는 오류로 실패해 시스템이 멈춘 것이다"
+            "description": "취소 사유 (REQUESTED: 사용자 취소 요청, EXPANSION_FAILED: 수신자 목록 조회 영구 오류로 인한 중단)"
           },
           "lastErrorCode": {
             "type": "string",
             "nullable": true,
-            "description": "시스템이 멈춘 경우의 마지막 오류 코드"
+            "description": "비정상 중단 시 기록된 마지막 오류 코드"
           },
           "lastErrorMessage": {
             "type": "string",
@@ -851,10 +808,7 @@
             "nullable": true
           }
         },
-        "required": [
-          "items",
-          "nextCursor"
-        ]
+        "required": ["items", "nextCursor"]
       },
       "DeliveryCounts": {
         "type": "object",
@@ -900,10 +854,7 @@
           },
           "type": {
             "type": "string",
-            "enum": [
-              "BULK",
-              "URGENT"
-            ]
+            "enum": ["BULK", "URGENT"]
           },
           "title": {
             "type": "string"
@@ -913,13 +864,7 @@
           },
           "status": {
             "type": "string",
-            "enum": [
-              "CREATED",
-              "SENDING",
-              "CANCELING",
-              "CANCELED",
-              "COMPLETED"
-            ]
+            "enum": ["CREATED", "SENDING", "CANCELING", "CANCELED", "COMPLETED"]
           },
           "createdAt": {
             "type": "string",
@@ -937,31 +882,28 @@
           },
           "cancelReason": {
             "type": "string",
-            "enum": [
-              "REQUESTED",
-              "EXPANSION_FAILED"
-            ],
+            "enum": ["REQUESTED", "EXPANSION_FAILED"],
             "nullable": true,
-            "description": "REQUESTED는 취소 요청, EXPANSION_FAILED는 수신자 조회가 다시 해도 안 되는 오류로 실패해 시스템이 멈춘 것이다"
+            "description": "취소 사유 (REQUESTED: 사용자 취소 요청, EXPANSION_FAILED: 수신자 목록 조회 영구 오류로 인한 중단)"
           },
           "lastErrorCode": {
             "type": "string",
             "nullable": true,
-            "description": "시스템이 멈춘 경우의 마지막 오류 코드"
+            "description": "비정상 중단 시 기록된 마지막 오류 코드"
           },
           "lastErrorMessage": {
             "type": "string",
             "nullable": true
           },
           "recipientIds": {
-            "description": "URGENT일 때 지정한 수신자",
+            "description": "URGENT 알림의 대상 수신자 ID 목록",
             "type": "array",
             "items": {
               "type": "string"
             }
           },
           "counts": {
-            "description": "조회 시점에 Delivery에서 센 값 (ADR-0018)",
+            "description": "조회 시점의 상태별 Delivery 집계 (ADR-0018)",
             "allOf": [
               {
                 "$ref": "#/components/schemas/DeliveryCounts"
@@ -1051,10 +993,7 @@
             "nullable": true
           }
         },
-        "required": [
-          "items",
-          "nextCursor"
-        ]
+        "required": ["items", "nextCursor"]
       }
     }
   }

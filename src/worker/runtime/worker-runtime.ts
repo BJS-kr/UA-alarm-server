@@ -66,7 +66,7 @@ export class WorkerRuntime {
 
     this.pool = createWorkerPool(config, workerId, 10, onDbError);
     this.db = createDb(this.pool);
-    // 토큰 받기와 꺼내기 전용. 결과 기록 트랜잭션과 연결을 다투지 않게 따로 둔다.
+    // 토큰 획득 및 발송 대상 점유(claim) 전용 커넥션 풀. 결과 기록 트랜잭션과의 커넥션 경합을 분리한다.
     this.loopPool = createWorkerPool(config, workerId, 2, onDbError);
     const loopDb = createDb(this.loopPool);
 
@@ -75,7 +75,7 @@ export class WorkerRuntime {
       config.MAX_IN_FLIGHT,
     );
     const deliveries = new DeliveryRepository(this.db, workerId, loopDb);
-    // 시험 발송의 기한은 발송 기한과 같다. 그 안에 결과를 알리지 못하면 맡은 워커가 죽은 것으로 본다.
+    // 프로브 발송의 리스 시간은 일반 발송 리스(DELIVERY_LEASE_MS)와 동일하게 설정한다.
     const bucket = new TokenBucket(
       loopDb,
       config.RATE_LIMIT_PER_SEC,
@@ -152,8 +152,8 @@ export class WorkerRuntime {
   }
 
   /**
-   * 정상 종료 (ADR-0007): 새 건을 꺼내지 않고, 보낸 요청의 결과를 기록하고,
-   * 보내지 않은 건과 펼치기 담당은 반납한 뒤 연결을 닫는다.
+   * 정상 종료(Graceful shutdown, ADR-0007): 신규 점유를 중단하고 진행 중인 발송 결과를 기록한 뒤,
+   * 미전송 건과 수신자 확장 점유를 반납하고 커넥션을 종료한다.
    */
   async stop(): Promise<void> {
     this.options.logger.log('Graceful shutdown started');

@@ -1,5 +1,6 @@
-# 비공개 원본 과제 명세 (ADR-0038)
+# 로컬 비공개 자료 (ADR-0038)
 .local/
+CLAUDE.md
 
 node_modules/
 dist/

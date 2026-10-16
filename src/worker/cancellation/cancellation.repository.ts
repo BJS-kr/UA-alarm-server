@@ -5,14 +5,14 @@ import { Tx } from '../../shared/db/executor';
 import { alarms, deliveries } from '../../shared/db/schema';
 import { AlarmStatus, DeliveryStatus } from '../../shared/domain/status';
 
-/** 취소 2단계(대기 건 정리)의 저장소 (ADR-0017). 점유 방식은 펼치기와 같다 (ADR-0004). */
+/** 취소 2단계(PENDING 정리) 저장소 (ADR-0017). 수신자 확장과 동일한 리스 기반 점유 방식을 사용한다 (ADR-0004). */
 export class CancellationRepository {
   constructor(
     private readonly db: Db,
     private readonly workerId: number,
   ) {}
 
-  /** 대기 건 정리가 끝나지 않은 CANCELING 알림 하나를 쥔다. 아무도 쥐지 않았거나 기한이 지난 것만. */
+  /** PENDING 정리가 완료되지 않은 CANCELING 알림 1건을 점유한다 (미점유 또는 리스 만료 대상). */
   async claim(leaseMs: number): Promise<string | undefined> {
     const next = this.db
       .select({ id: alarms.id })

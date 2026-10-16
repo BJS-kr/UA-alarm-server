@@ -1,5 +1,5 @@
-# 끝단 테스트용 override (ADR-0035). 기본 동작 특성(오류, 지연, 처리량 제한)은 그대로 두고 사용자 수만 줄인다.
-# ADMIN은 mock의 평가용 집계(/_admin/stats)를 켠다. 누락·중복을 우리 DB가 아니라 외부 서비스 쪽 기록으로 확인한다.
+# E2E 테스트용 override (ADR-0035). 오류율·지연·처리량 제한 조건은 유지하고 사용자 수만 축소한다.
+# ADMIN=1은 mock 서버의 검증용 집계 엔드포인트(/_admin/stats)를 활성화한다.
 # docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d
 services:
   mock:

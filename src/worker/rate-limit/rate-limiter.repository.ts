@@ -9,29 +9,28 @@ const SINGLE_ROW = 1;
 
 export interface AcquireResult {
   granted: number;
-  /** 다음 토큰이 생기거나 정지·시험 발송이 끝나기까지 남은 시간. 받고도 통에 토큰이 남았으면 0이다 */
+  /** 다음 토큰 보충 또는 일시 정지·프로브 대기 해제까지 남은 시간(ms). 잔여 토큰이 있으면 0 */
   waitMs: number;
-  /** 이 토큰이 브레이커가 열린 뒤의 시험 발송이다. 결과를 반드시 알려야 한다. */
+  /** 서킷 브레이커 OPEN 후 허용된 프로브(단건 시험 발송) 토큰 여부 */
   isProbe: boolean;
-  /** 브레이커가 열려 있다(장애로 판단한 상태). 이 동안의 실패는 시도 횟수에 세지 않는다. */
+  /** 서킷 브레이커 OPEN 여부. OPEN 구간의 실패는 발송 시도 횟수에서 차감한다. */
   isBreakerOpen: boolean;
 }
 
 export interface BreakerState {
   isPaused: boolean;
-  /** 직전 브레이커 정지가 풀린 뒤 streakWindowMs 안인가 */
+  /** 직전 브레이커 정지 해제 시각으로부터 streakWindowMs 이내인지 여부 */
   isConsecutive: boolean;
   streak: number;
 }
 
-/** 모든 워커가 함께 쓰는 토큰 버킷 행의 저장소 (ADR-0009, 0014). 시계는 DB 시계 하나다. */
+/** 다중 워커 공유 토큰 버킷 저장소 (ADR-0009, 0014). 기준 시계는 PostgreSQL clock_timestamp()로 통일한다. */
 export class RateLimiterRepository {
   constructor(private readonly db: Db) {}
 
   /**
-   * 요청할 때 흐른 시간만큼 채우고(lazy refill) 지급한다. 계산과 지급이 한 문장이어야 같은 토큰이 두 번 나가지 않아,
-   * 중간값을 CTE로 이어 붙인 SQL로 쓴다. 잠금을 기다리는 동안 다른 워커가 refilled_at을 앞으로 옮겼을 수 있으므로,
-   * 흐른 시간은 0 아래로 내려가지 않게, refilled_at은 뒤로 가지 않게 막아 더 지급하는 일이 없게 한다.
+   * 요청 시점에 경과 시간만큼 토큰을 보충(lazy refill)하고 차감한다.
+   * 보충 계산과 차감을 단일 UPDATE CTE 문으로 처리하여 동시 요청 간 중복 지급을 방지한다.
    */
   async acquire(
     requested: number,
@@ -59,7 +58,7 @@ export class RateLimiterRepository {
       ),
       g AS (
         SELECT ts, avail, paused_until, breaker_open, probe_until, new_refilled_at,
-               -- 정지 중이면 0. 브레이커가 열려 있으면 시험 발송 한 건만, 이미 나가 있으면 0 (ADR-0014).
+               -- 일시 정지 중이면 0. 브레이커 OPEN 상태면 프로브 1건만 허용하며, 이미 프로브 진행 중이면 0 (ADR-0014).
                CASE WHEN ts < paused_until THEN 0
                     WHEN breaker_open AND ts < probe_until THEN 0
                     WHEN breaker_open THEN LEAST(1, floor(avail)::int)
@@ -77,7 +76,7 @@ export class RateLimiterRepository {
       RETURNING p.granted, p.is_probe, p.breaker_open,
                 CASE WHEN p.ts < p.paused_until THEN EXTRACT(EPOCH FROM p.paused_until - p.ts)::float8 * 1000
                      WHEN p.breaker_open AND p.ts < p.probe_until THEN EXTRACT(EPOCH FROM p.probe_until - p.ts)::float8 * 1000
-                     -- 받은 뒤 통이 비었으면 다음 토큰까지 남은 시간이다. 남은 토큰이 1개 이상이면 0.
+                     -- 차감 후 잔여 토큰이 1개 미만이면 다음 토큰 보충까지 남은 시간(ms), 1개 이상이면 0.
                      ELSE GREATEST(0, 1 - (p.avail - p.granted)) / ${ratePerSec}::float8 * 1000 END AS wait_ms`);
     const row = result.rows[0];
 
@@ -89,7 +88,7 @@ export class RateLimiterRepository {
     };
   }
 
-  /** 시험 발송이 성공했다. 브레이커를 닫아 평소처럼 토큰을 낸다 (ADR-0014). */
+  /** 프로브 발송 성공 시 서킷 브레이커를 CLOSED로 복귀시킨다 (ADR-0014). */
   async closeBreaker(): Promise<void> {
     await this.db
       .update(rateLimiter)
@@ -97,7 +96,7 @@ export class RateLimiterRepository {
       .where(eq(rateLimiter.id, SINGLE_ROW));
   }
 
-  /** 받은 시험 발송 토큰을 쓰지 않았다(보낼 건이 없었음 등). 다음 요청이 바로 다시 시험할 수 있게 한다. */
+  /** 획득한 프로브 토큰을 사용하지 않은 경우(발송 대상 없음 등) 즉시 반환하여 다음 프로브를 허용한다. */
   async releaseProbe(): Promise<void> {
     await this.db
       .update(rateLimiter)
@@ -105,7 +104,7 @@ export class RateLimiterRepository {
       .where(eq(rateLimiter.id, SINGLE_ROW));
   }
 
-  /** 정지 해제 시각을 지금 + ms 이후로 미룬다. 이미 더 늦게 잡혀 있으면 그대로 둔다. */
+  /** 일시 정지 해제 시각(paused_until)을 GREATEST(기존값, now + ms)로 갱신한다. */
   async extendPause(ms: number): Promise<void> {
     await this.db
       .update(rateLimiter)

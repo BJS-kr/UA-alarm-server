@@ -5,17 +5,15 @@ import { monotonicMs } from '../runtime/loop-utils';
 import { BreakerOptions, TokenBucket } from '../rate-limit/token-bucket';
 
 /**
- * 발송 장애 시 전체 정지 (ADR-0014). 판단은 외부 서비스의 health가 아니라 발송 결과로 한다.
- * - 장애로 판단하면 브레이커를 열고 토큰 버킷의 정지 칸을 미뤄 모든 워커가 함께 멈춘다.
- * - 정지가 풀리면 모든 워커를 합쳐 시험 발송 한 건만 나간다. 성공하면 닫고, 실패하면 정지를 두 배로 늘려 다시 연다.
- * - 브레이커가 열린 뒤에 도착한, 열리기 전에 시작한 요청의 결과는 판단에 쓰지 않는다.
- *   정지 전에 나간 요청이 타임아웃으로 하나씩 돌아와 판단 창을 채우면, 풀리자마자 다시 발동하기 때문이다.
- * 열림 상태의 원본은 DB의 행 하나다. 워커는 토큰을 받을 때마다 그 상태를 받아 자기 판단에 반영한다.
+ * 발송 장애 감지 및 서킷 브레이커 제어 (ADR-0014). 외부 /health 엔드포인트가 아닌 실제 발송 결과를 기준으로 판단한다.
+ * - 장애율 임계치 초과 시 브레이커를 OPEN으로 전이하고 DB 토큰 버킷의 paused_until을 갱신해 전체 워커를 일시 정지시킨다.
+ * - 정지 해제 후에는 전체 워커를 통틀어 프로브(단건 시험 발송) 1건만 허용한다. 성공 시 CLOSED로 복귀하고 실패 시 정지 시간을 배수로 늘린다.
+ * - 브레이커 OPEN 이전에 시작되어 뒤늦게 도착한 요청 결과는 슬라이딩 윈도우 집계에서 제외한다.
  */
 export class SendBreaker {
   private readonly window: BreakerWindow;
   private isOpenNow = false;
-  /** 이 워커가 브레이커가 열린 것을 마지막으로 안 시각(단조 시계 ms). 그 전에 시작한 요청의 결과는 판단에 쓰지 않는다. */
+  /** 현재 워커가 브레이커 OPEN을 인지한 단조 시계 시각(ms). 이 시각 이전에 시작된 요청의 결과는 집계에서 제외한다. */
   private openedAt = Number.NEGATIVE_INFINITY;
 
   constructor(
@@ -30,12 +28,12 @@ export class SendBreaker {
     this.window = new BreakerWindow(size, failureRatio);
   }
 
-  /** 장애로 판단한 상태인가. 이 동안의 실패는 시도 횟수에 세지 않는다 (ADR-0014). */
+  /** 서킷 브레이커 OPEN 여부. OPEN 구간의 실패는 발송 시도 횟수(attempts)에서 차감한다 (ADR-0014). */
   isOpen(): boolean {
     return this.isOpenNow;
   }
 
-  /** 토큰을 받을 때 DB가 알려 준 열림 상태를 반영한다. */
+  /** 토큰 획득 시 DB에서 읽은 브레이커 OPEN 상태를 동기화한다. */
   observe(isBreakerOpen: boolean): void {
     const isNewlyOpened = isBreakerOpen && !this.isOpenNow;
     if (isNewlyOpened) this.markOpened();
@@ -43,7 +41,7 @@ export class SendBreaker {
     if (isNewlyClosed) this.markClosed();
   }
 
-  /** startedAt은 그 요청을 보내기 시작한 단조 시계 ms다. */
+  /** startedAt은 해당 발송 요청이 시작된 단조 시계 시각(ms)이다. */
   async record(
     result: SendResult,
     startedAt: number,
@@ -63,7 +61,7 @@ export class SendBreaker {
       const isReopened = await this.trip(
         'The probe send failed, the outage continues',
       );
-      // 429 정지 중이라 다시 열지 못했다. 시험 토큰을 돌려줘야 정지가 풀리자마자 다시 시험한다.
+      // 429 일시 정지 중이어서 재개방하지 못한 경우, 정지 해제 직후 프로브를 재시도할 수 있도록 프로브 슬롯을 반환한다.
       if (!isReopened) await this.bucket.releaseProbe();
 
       return;

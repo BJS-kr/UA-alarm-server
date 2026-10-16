@@ -44,19 +44,18 @@ function maskValue(key: string, value: unknown): unknown {
   const isPhone = PHONE_KEYS.has(k);
   if (isPhone) return maskPhone(value);
 
-  // 접속 주소의 비밀번호는 필드 이름과 관계없이 가린다.
+  // URL 내 자격 증명은 필드명과 무관하게 마스킹한다.
   return maskUrlCredentials(value);
 }
 
 /**
- * 우리가 쓰지 않은 글(오류 메시지, 라이브러리 로그)은 어디에 무엇이 들었는지 모른다.
- * 그래서 필드 이름과 관계없이 네 자리 이상 숫자와 접속 주소의 비밀번호를 가린다.
+ * 자유 형식 문자열(외부 오류 메시지, 라이브러리 로그 등)에서 4자리 이상 연속 숫자와 URL 자격 증명을 마스킹한다.
  */
 export function maskFreeText(text: string): string {
   return maskUrlCredentials(maskDigits(text));
 }
 
-/** 호출 위치 줄(`    at ...`)은 그대로 둔다. 줄 번호까지 가리면 오류가 난 곳을 찾을 수 없다. */
+/** 스택 프레임 줄(`    at ...`)은 라인 번호 보존을 위해 마스킹에서 제외한다. */
 export function maskStack(stack: string): string {
   return stack
     .split('\n')
@@ -64,7 +63,7 @@ export function maskStack(stack: string): string {
     .join('\n');
 }
 
-/** 오류의 종류만 나타내고 내용은 담지 않는 필드. 가리면 원인을 찾을 수 없다(예: Postgres 코드 23505). */
+/** 오류 식별용 메타데이터 필드(예: PostgreSQL 오류 코드 23505)는 마스킹에서 제외한다. */
 const ERROR_ID_KEYS = new Set(['name', 'code', 'errno', 'syscall', 'severity']);
 const MAX_ERROR_DEPTH = 5;
 
@@ -82,9 +81,8 @@ function maskErrorField(key: string, value: unknown): unknown {
 }
 
 /**
- * 오류를 글을 가린 일반 객체로 바꾼다 (ADR-0028). 모양은 NestJS 기본 직렬화와 같다:
- * name, message, stack, 원시값 필드, 그리고 cause와 errors(AggregateError)를 따라 내려간다.
- * DB 드라이버와 ORM은 실패한 문장의 값(본문, 수신자)을 message나 detail에 담으므로 필드 이름이 아니라 내용으로 가린다.
+ * Error 객체를 마스킹된 일반 객체로 직렬화한다 (ADR-0028).
+ * name, message, stack, 원시 프로퍼티 및 중첩된 cause, errors(AggregateError)를 재귀적으로 마스킹한다.
  */
 export function maskError(
   error: Error,

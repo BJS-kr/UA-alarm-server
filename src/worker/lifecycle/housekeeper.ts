@@ -5,8 +5,8 @@ import { WorkerMetrics } from '../metrics/worker-metrics';
 import { PollingLoop, Tick } from '../runtime/polling-loop';
 
 /**
- * 넘겨받기 (ADR-0004). 살아 있는 워커 누구나 주기적으로, 기한이 지난 IN_FLIGHT 건을 결과 미확정으로 돌린다.
- * 따로 감시 프로세스를 두지 않는다. 기한 판단은 DB 시계로 하므로 워커끼리 시계가 달라도 된다.
+ * 리스 만료 회수(Takeover, ADR-0004). 모든 활성 워커가 주기적으로 lease_until이 경과한 IN_FLIGHT 건을
+ * UNCONFIRMED로 전이한다. 만료 판정은 DB 시각(clock_timestamp)을 기준으로 수행한다.
  */
 export class Housekeeper {
   private readonly loop: PollingLoop;
