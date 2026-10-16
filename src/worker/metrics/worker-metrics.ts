@@ -70,6 +70,13 @@ export class WorkerMetrics {
     registers: [this.registry],
   });
 
+  readonly tokenRequests = new Counter({
+    name: 'alarm_token_requests_total',
+    help: '토큰 버킷 행에 토큰을 요청한 횟수. empty는 0개를 받은 요청이다. 이 행의 갱신 부하가 곧 이 값이다',
+    labelNames: ['result'] as const,
+    registers: [this.registry],
+  });
+
   readonly breakerProbes = new Counter({
     name: 'alarm_breaker_probes_total',
     help: '브레이커가 열린 뒤의 시험 발송 결과. recovered면 닫혔고, still_failing이면 다시 열렸다',

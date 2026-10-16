@@ -155,6 +155,19 @@ describe('워커 전체 흐름 (ADR-0002, 0006, 0009, 0011, 0014)', () => {
     expect(fake.received).toHaveLength(300);
     // 처리량을 버리지 않는다: 300건 ÷ 초당 100 = 3초에 가깝다.
     expect(elapsedSec).toBeLessThan(6);
+
+    // 0개를 받은 토큰 요청은 토큰 버킷 행의 헛된 갱신이다. 연달아 0개면 물러나므로 워커 셋이 다투어도 많지 않다 (ADR-0009).
+    let emptyRequests = 0;
+
+    for (const worker of workers) {
+      const { values } = await worker.runtime.metrics.tokenRequests.get();
+
+      emptyRequests +=
+        values.find((v) => v.labels.result === 'empty')?.value ?? 0;
+    }
+
+    // 실측: 물러나지 않으면 약 730건, 물러나면 약 350건 (300건 발송)
+    expect(emptyRequests).toBeLessThan(500);
   });
 
   it('펼치기는 저장된 커서부터 이어 가고 중복 행을 만들지 않는다 (ADR-0006)', async () => {

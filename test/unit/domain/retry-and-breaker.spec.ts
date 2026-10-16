@@ -2,6 +2,7 @@ import { BreakerWindow } from '../../../src/shared/domain/breaker-window';
 import {
   breakerPauseMs,
   retryDelayMs,
+  tokenRetryWaitMs,
 } from '../../../src/shared/domain/retry-policy';
 
 describe('지수 백오프 + 지터 (ADR-0014)', () => {
@@ -75,5 +76,25 @@ describe('서킷 브레이커 판단 창 (ADR-0014)', () => {
     }
 
     expect(tripped).toBe(false);
+  });
+});
+
+describe('토큰을 0개 받았을 때의 백오프 (ADR-0009)', () => {
+  const full = () => 1;
+
+  it('처음에는 다음 토큰까지 쉬고, 연달아 0개면 두 배씩 늘려 100ms에서 멈춘다', () => {
+    expect([1, 2, 3, 4, 5].map((n) => tokenRetryWaitMs(n, 10, full))).toEqual([
+      10, 20, 40, 80, 100,
+    ]);
+  });
+
+  it('실제로 쉬는 시간은 그 값의 절반~전부 사이다', () => {
+    expect(tokenRetryWaitMs(3, 10, () => 0)).toBe(20);
+    expect(tokenRetryWaitMs(3, 10, () => 0.5)).toBe(30);
+  });
+
+  it('다음 토큰이 바로 생겨도 최소 5ms는 쉰다', () => {
+    expect(tokenRetryWaitMs(1, 0, full)).toBe(5);
+    expect(tokenRetryWaitMs(1, 6, () => 0)).toBe(5);
   });
 });

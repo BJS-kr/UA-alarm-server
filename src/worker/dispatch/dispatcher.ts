@@ -6,6 +6,10 @@ import {
   SendResult,
 } from '../../shared/domain/send-outcome';
 import { hasLeaseFor } from '../../shared/domain/lease';
+import {
+  TOKEN_WAIT_MAX_MS,
+  tokenRetryWaitMs,
+} from '../../shared/domain/retry-policy';
 import { clientRefOf } from '../../shared/domain/status';
 import { ExternalApiClient } from '../../shared/external/external-api.client';
 import { withLogContext } from '../../shared/logging/log-context';
@@ -16,9 +20,6 @@ import { durable, monotonicMs, waitAtMost } from '../runtime/loop-utils';
 import { PollingLoop, Tick } from '../runtime/polling-loop';
 import { retryOptions } from '../runtime/retry-options';
 import { ClaimedDelivery, DeliveryRepository } from './delivery.repository';
-
-/** 토큰이 없을 때 최소로 쉬는 시간. */
-const MIN_TOKEN_WAIT_MS = 5;
 
 export interface DispatcherDeps {
   config: AppConfig;
@@ -38,6 +39,8 @@ export interface DispatcherDeps {
 export class Dispatcher {
   private readonly inFlight = new Set<Promise<void>>();
   private readonly loop: PollingLoop;
+  /** 연달아 토큰을 0개 받은 횟수. 받으면 0으로 돌아간다 (ADR-0009). */
+  private emptyGrants = 0;
 
   constructor(private readonly deps: DispatcherDeps) {
     this.loop = new PollingLoop(
@@ -80,14 +83,12 @@ export class Dispatcher {
 
     this.deps.breaker.observe(grant.isBreakerOpen);
     const isOutOfTokens = grant.granted === 0;
-    if (isOutOfTokens) {
-      return {
-        sleepMs: Math.min(
-          Math.max(grant.waitMs, MIN_TOKEN_WAIT_MS),
-          config.IDLE_POLL_MS,
-        ),
-      };
-    }
+
+    this.deps.metrics.tokenRequests.inc({
+      result: isOutOfTokens ? 'empty' : 'granted',
+    });
+    if (isOutOfTokens) return { sleepMs: this.waitForTokens(grant.waitMs) };
+    this.emptyGrants = 0;
 
     // 기한은 claim 쿼리를 보내기 전의 단조 시계로 잰다. DB가 적는 기한보다 늘 이르므로 워커 쪽 판단이 보수적이다 (ADR-0004).
     const claimStartedAt = monotonicMs();
@@ -111,6 +112,18 @@ export class Dispatcher {
     }
 
     return 'busy';
+  }
+
+  /**
+   * 정지(429·브레이커)나 시험 발송 때문이면 그 시각까지 쉰다(길면 IDLE_POLL_MS마다 다시 본다).
+   * 다른 워커가 토큰을 먼저 가져간 것이면 연달아 0개일수록 두 배씩 물러난다 (ADR-0009).
+   */
+  private waitForTokens(waitMs: number): number {
+    const isPausedLonger = waitMs > TOKEN_WAIT_MAX_MS;
+    if (isPausedLonger) return Math.min(waitMs, this.deps.config.IDLE_POLL_MS);
+    this.emptyGrants += 1;
+
+    return tokenRetryWaitMs(this.emptyGrants, waitMs);
   }
 
   /** 보내는 건 하나는 루프와 따로 돈다. 예상하지 못한 오류가 나도 루프와 다른 건에 번지지 않게 여기서 받는다. */

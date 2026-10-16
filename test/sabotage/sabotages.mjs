@@ -460,4 +460,14 @@ export const SABOTAGES = [
     test: COMPLETION_TEST,
     name: '장애 동안의 응답 없음은',
   },
+  {
+    id: 'S52',
+    adr: '0009',
+    what: '토큰을 연달아 0개 받아도 물러나지 않는다(다음 토큰까지만 쉰다)',
+    file: 'src/shared/domain/retry-policy.ts',
+    find: '    base * 2 ** Math.max(0, emptyGrants - 1),\n',
+    replace: '    base,\n',
+    test: FLOW_TEST,
+    name: '워커 3대가 처리량 제한을 함께 지켜',
+  },
 ];
