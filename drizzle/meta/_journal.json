@@ -36,6 +36,13 @@
       "when": 1792135119746,
       "tag": "0004_breaker_probe",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792135900118,
+      "tag": "0005_alarm_cancel_reason",
+      "breakpoints": true
     }
   ]
 }

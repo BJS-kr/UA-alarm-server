@@ -16,6 +16,7 @@ import {
 import {
   AlarmStatus,
   AlarmType,
+  CancelReason,
   DeliveryStatus,
 } from '../../shared/domain/status';
 import { CharLength, NoNulCharacter } from '../http/validation';
@@ -128,6 +129,21 @@ export class AlarmView {
   startedAt!: string | null;
   @ApiProperty({ format: 'date-time', nullable: true, type: String })
   finishedAt!: string | null;
+  @ApiProperty({
+    enum: Object.values(CancelReason),
+    nullable: true,
+    description:
+      'REQUESTED는 취소 요청, EXPANSION_FAILED는 수신자 조회가 다시 해도 안 되는 오류로 실패해 시스템이 멈춘 것이다',
+  })
+  cancelReason!: CancelReason | null;
+  @ApiProperty({
+    nullable: true,
+    type: String,
+    description: '시스템이 멈춘 경우의 마지막 오류 코드',
+  })
+  lastErrorCode!: string | null;
+  @ApiProperty({ nullable: true, type: String })
+  lastErrorMessage!: string | null;
 }
 
 export class DeliveryCounts {

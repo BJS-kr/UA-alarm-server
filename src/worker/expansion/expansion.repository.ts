@@ -3,7 +3,12 @@ import { Db } from '../../shared/db/database';
 import { dbNow, dbNowPlus } from '../../shared/db/db-clock';
 import { Tx } from '../../shared/db/executor';
 import { alarms, deliveries } from '../../shared/db/schema';
-import { AlarmStatus, AlarmType, priorityOf } from '../../shared/domain/status';
+import {
+  AlarmStatus,
+  AlarmType,
+  CancelReason,
+  priorityOf,
+} from '../../shared/domain/status';
 
 export interface ExpansionTask {
   alarmId: string;
@@ -70,6 +75,31 @@ export class ExpansionRepository {
       .returning({ id: alarms.id });
 
     return renewed.length > 0;
+  }
+
+  /**
+   * 다시 해도 안 되는 실패로 펼치기를 포기하고 알림을 취소 중으로 돌린다 (ADR-0006, 0017).
+   * 이미 나간 건은 그대로 두고, 남은 건은 취소 2단계(대기 건 정리)가 CANCELED로 바꾼다.
+   * 취소 이유와 마지막 오류를 남겨 운영자가 사람이 취소한 것과 구별하게 한다. 이미 취소됐거나 넘겨받혔으면 false다.
+   */
+  async abandon(
+    task: ExpansionTask,
+    error: { code: string; message: string },
+  ): Promise<boolean> {
+    const abandoned = await this.db
+      .update(alarms)
+      .set({
+        status: AlarmStatus.CANCELING,
+        cancelReason: CancelReason.EXPANSION_FAILED,
+        lastErrorCode: error.code,
+        lastErrorMessage: error.message,
+        expansionOwner: null,
+        expansionLeaseUntil: null,
+      })
+      .where(this.myTask(task))
+      .returning({ id: alarms.id });
+
+    return abandoned.length > 0;
   }
 
   /** 정상 종료할 때 담당을 내려놓는다. 다른 워커가 기한을 기다리지 않고 이어 간다 (ADR-0007). */

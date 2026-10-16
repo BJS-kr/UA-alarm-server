@@ -23,7 +23,8 @@ export interface ExternalUser {
 
 export type UsersPageResult =
   | { kind: 'ok'; users: ExternalUser[]; nextCursor: string | null }
-  | { kind: 'error'; code: string; message: string };
+  /** status는 응답을 받았을 때의 HTTP 상태다. 연결 단계에서 실패했으면 없다. */
+  | { kind: 'error'; code: string; message: string; status?: number };
 
 export interface SendMessageInput {
   alarmId: string;
@@ -181,6 +182,7 @@ export class ExternalApiClient {
       kind: 'error',
       code: `HTTP_${outcome.status}`,
       message: outcome.body.slice(0, 200),
+      status: outcome.status,
     };
   }
 

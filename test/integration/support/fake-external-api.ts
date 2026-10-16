@@ -48,7 +48,9 @@ export class FakeExternalApi {
     type: 'accept',
   });
   lookupFails = false;
-  usersFail = false;
+  /** 정하면 사용자 조회가 이 HTTP 상태로 실패한다. */
+  usersFailStatus: number | null = null;
+  usersRequests = 0;
 
   constructor(public users: string[] = []) {}
 
@@ -104,8 +106,11 @@ export class FakeExternalApi {
   }
 
   private listUsers(url: URL, res: http.ServerResponse): void {
-    if (this.usersFail) {
-      return void res.writeHead(500).end('{"code":"INTERNAL_ERROR"}');
+    this.usersRequests += 1;
+    const failStatus = this.usersFailStatus;
+    const isFailing = failStatus !== null;
+    if (isFailing) {
+      return void res.writeHead(failStatus).end('{"code":"FAILED"}');
     }
 
     const limit = Number(url.searchParams.get('limit') ?? 100);

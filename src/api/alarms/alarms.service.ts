@@ -201,6 +201,9 @@ function toAlarmView(row: AlarmRow): AlarmView {
     createdAt: row.createdAt.toISOString(),
     startedAt: row.startedAt?.toISOString() ?? null,
     finishedAt: row.finishedAt?.toISOString() ?? null,
+    cancelReason: row.cancelReason,
+    lastErrorCode: row.lastErrorCode,
+    lastErrorMessage: row.lastErrorMessage,
   };
 }
 

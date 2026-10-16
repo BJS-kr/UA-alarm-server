@@ -284,7 +284,10 @@ describe('API (ADR-0015, 0016, 0019~0024)', () => {
     const canceled = await call('POST', `/v1/alarms/${created.json.id}/cancel`);
 
     expect(canceled.status).toBe(200);
-    expect(canceled.json).toMatchObject({ status: 'CANCELED' });
+    expect(canceled.json).toMatchObject({
+      status: 'CANCELED',
+      cancelReason: 'REQUESTED',
+    });
     expect(canceled.json.finishedAt).not.toBeNull();
     expect(
       (await call('POST', `/v1/alarms/${created.json.id}/cancel`)).status,
@@ -311,6 +314,7 @@ describe('API (ADR-0015, 0016, 0019~0024)', () => {
 
     expect(again.status).toBe(202);
     expect(again.json.status).toBe('CANCELING');
+    expect(again.json.cancelReason).toBe('REQUESTED');
   });
 
   it('완료된 알림의 취소는 409, 시작은 200이다', async () => {

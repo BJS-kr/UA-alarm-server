@@ -96,6 +96,13 @@ export class WorkerMetrics {
     registers: [this.registry],
   });
 
+  readonly expansionFetchFailures = new Counter({
+    name: 'alarm_expansion_fetch_failures_total',
+    help: '펼치기의 사용자 조회 실패. transient는 재시도하고, permanent는 알림을 취소 처리했다',
+    labelNames: ['kind'] as const,
+    registers: [this.registry],
+  });
+
   readonly loopErrors = new Counter({
     name: 'alarm_loop_errors_total',
     help: '작업 루프 한 바퀴가 예상하지 못한 오류로 끝난 횟수. 루프는 멈추지 않고 이어 간다',

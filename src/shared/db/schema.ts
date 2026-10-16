@@ -15,7 +15,12 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
-import type { AlarmStatus, AlarmType, DeliveryStatus } from '../domain/status';
+import type {
+  AlarmStatus,
+  AlarmType,
+  CancelReason,
+  DeliveryStatus,
+} from '../domain/status';
 
 /** 컬럼과 인덱스의 근거는 docs/schema.md에 있다. */
 
@@ -42,6 +47,9 @@ export const alarms = pgTable(
     cleanupDone: boolean('cleanup_done').notNull().default(false),
     cleanupOwner: bigint('cleanup_owner', { mode: 'number' }),
     cleanupLeaseUntil: timestamp('cleanup_lease_until', tz),
+    cancelReason: text('cancel_reason').$type<CancelReason>(),
+    lastErrorCode: text('last_error_code'),
+    lastErrorMessage: text('last_error_message'),
     createdAt: timestamp('created_at', tz).notNull().defaultNow(),
     startedAt: timestamp('started_at', tz),
     finishedAt: timestamp('finished_at', tz),
@@ -51,6 +59,10 @@ export const alarms = pgTable(
     check(
       'alarms_status_check',
       sql`${t.status} IN ('CREATED', 'SENDING', 'CANCELING', 'CANCELED', 'COMPLETED')`,
+    ),
+    check(
+      'alarms_cancel_reason_check',
+      sql`${t.cancelReason} IN ('REQUESTED', 'EXPANSION_FAILED')`,
     ),
     check(
       'alarms_title_length_check',

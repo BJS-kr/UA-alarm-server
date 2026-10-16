@@ -7,6 +7,7 @@ import { alarmRecipients, alarms, deliveries } from '../../shared/db/schema';
 import {
   AlarmStatus,
   AlarmType,
+  CancelReason,
   DeliveryStatus,
   priorityOf,
 } from '../../shared/domain/status';
@@ -153,14 +154,21 @@ export class AlarmsRepository {
   async cancel(id: string): Promise<AlarmRow | undefined> {
     const [canceled] = await this.db
       .update(alarms)
-      .set({ status: AlarmStatus.CANCELED, finishedAt: dbNow })
+      .set({
+        status: AlarmStatus.CANCELED,
+        cancelReason: CancelReason.REQUESTED,
+        finishedAt: dbNow,
+      })
       .where(and(eq(alarms.id, id), eq(alarms.status, AlarmStatus.CREATED)))
       .returning();
     const isCanceledBeforeStart = canceled !== undefined;
     if (isCanceledBeforeStart) return canceled;
     const [canceling] = await this.db
       .update(alarms)
-      .set({ status: AlarmStatus.CANCELING })
+      .set({
+        status: AlarmStatus.CANCELING,
+        cancelReason: CancelReason.REQUESTED,
+      })
       .where(and(eq(alarms.id, id), eq(alarms.status, AlarmStatus.SENDING)))
       .returning();
 

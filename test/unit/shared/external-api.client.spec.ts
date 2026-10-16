@@ -325,6 +325,7 @@ describe('외부 발송 API 응답 분류', () => {
         kind: 'error',
         code: 'HTTP_503',
         message: 'x'.repeat(200),
+        status: 503,
       });
     } finally {
       client.close();

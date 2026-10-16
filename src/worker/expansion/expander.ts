@@ -1,6 +1,7 @@
 import { LoggerService } from '@nestjs/common';
 import { AppConfig } from '../../shared/config/app-config';
 import { Db } from '../../shared/db/database';
+import { isPermanentFetchFailure } from '../../shared/domain/fetch-failure';
 import { retryDelayMs } from '../../shared/domain/retry-policy';
 import { AlarmStatus } from '../../shared/domain/status';
 import {
@@ -91,6 +92,13 @@ export class Expander {
       );
       const isFetchFailed = page.kind === 'error';
       if (isFetchFailed) {
+        const isPermanent = isPermanentFetchFailure(page.status);
+
+        this.metrics.expansionFetchFailures.inc({
+          kind: isPermanent ? 'permanent' : 'transient',
+        });
+        // 다시 해도 결과가 같다. 끝없이 재시도하지 않고 알림을 취소 처리해 사람이 보게 한다 (ADR-0006).
+        if (isPermanent) return this.giveUp(task, page);
         failures += 1;
         const delayMs = retryDelayMs(failures, {
           baseMs: this.config.RETRY_BASE_MS,
@@ -98,10 +106,16 @@ export class Expander {
           jitterRatio: this.config.RETRY_JITTER_RATIO,
         });
 
-        this.logger.warn('Fetching users failed, retrying', {
-          code: page.code,
-          delayMs,
-        });
+        // 기다림이 상한에 닿았다 = 사용자 서비스가 한동안 계속 실패한다. 경보를 걸 수 있게 error로 남긴다.
+        const isStalled = delayMs >= this.config.RETRY_MAX_MS;
+        const log = isStalled ? 'error' : 'warn';
+
+        this.logger[log](
+          isStalled
+            ? 'Expansion is stalled because fetching users keeps failing'
+            : 'Fetching users failed, retrying',
+          { code: page.code, delayMs },
+        );
         // 기다리는 동안 넘겨받히지 않도록 기다릴 시간만큼 기한을 늘린다.
         const isStillMineWhileWaiting = await this.repository.renew(
           task,
@@ -121,6 +135,18 @@ export class Expander {
 
     // 정상 종료로 멈췄다. 담당을 내려놓아 다른 워커가 기한을 기다리지 않고 이어 가게 한다 (ADR-0007).
     await this.repository.release(task);
+  }
+
+  private async giveUp(
+    task: ExpansionTask,
+    page: { code: string; message: string; status?: number },
+  ): Promise<void> {
+    const isAbandoned = await this.repository.abandon(task, page);
+    if (!isAbandoned) return;
+    this.logger.error(
+      'Fetching users failed with an error that retrying cannot fix, canceling the alarm',
+      { code: page.code, status: page.status },
+    );
   }
 
   private async savePage(

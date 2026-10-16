@@ -203,6 +203,76 @@ describe('워커 전체 흐름 (ADR-0002, 0006, 0009, 0011, 0014)', () => {
     }
   });
 
+  it('사용자 조회가 다시 해도 안 되는 오류(401)로 실패하면, 재시도하지 않고 알림을 취소 처리하며 이유를 남긴다 (ADR-0006)', async () => {
+    fake.users = userIds(100);
+    fake.usersFailStatus = 401;
+    const alarm = await insertAlarm(database.db, {
+      type: 'BULK',
+      expansionDone: false,
+    });
+
+    await start();
+    await waitFor(
+      async () => (await alarmStatus(database.db, alarm.id)) === 'CANCELED',
+    );
+    const row = await database.db.execute<{
+      cancel_reason: string;
+      last_error_code: string;
+    }>(
+      sql`SELECT cancel_reason, last_error_code FROM alarms WHERE id = ${alarm.id}`,
+    );
+
+    expect(row.rows[0]).toEqual({
+      cancel_reason: 'EXPANSION_FAILED',
+      last_error_code: 'HTTP_401',
+    });
+    await sleep(500);
+    expect(fake.usersRequests).toBe(1);
+  });
+
+  it('사용자 조회가 일시 오류로 실패하면 재시도해 끝까지 펼친다 (ADR-0006)', async () => {
+    fake.users = userIds(100);
+    fake.usersFailStatus = 503;
+    setTimeout(() => (fake.usersFailStatus = null), 300);
+    const alarm = await insertAlarm(database.db, {
+      type: 'BULK',
+      expansionDone: false,
+    });
+
+    await start();
+    await waitFor(
+      async () => (await alarmStatus(database.db, alarm.id)) === 'COMPLETED',
+    );
+
+    expect(
+      Object.keys(await deliveryStatuses(database.db, alarm.id)),
+    ).toHaveLength(100);
+    expect(fake.usersRequests).toBeGreaterThan(2);
+  });
+
+  it('사용자 조회가 계속 실패하는 동안 취소되면, 펼치기가 다음 조회 전에 멈춘다 (ADR-0006, 0017)', async () => {
+    fake.users = userIds(100);
+    fake.usersFailStatus = 503;
+    const alarm = await insertAlarm(database.db, {
+      type: 'BULK',
+      expansionDone: false,
+    });
+
+    await start();
+    await waitFor(async () => fake.usersRequests >= 2);
+    await database.db.execute(
+      sql`UPDATE alarms SET status = 'CANCELING' WHERE id = ${alarm.id}`,
+    );
+    await waitFor(
+      async () => (await alarmStatus(database.db, alarm.id)) === 'CANCELED',
+    );
+    // 이미 보낸 조회 하나는 끝날 수 있다. 그 뒤로는 재시도(최대 0.2초 간격)가 없어야 한다.
+    const afterCancel = fake.usersRequests;
+
+    await sleep(1000);
+    expect(fake.usersRequests).toBeLessThanOrEqual(afterCancel + 1);
+  });
+
   it('기한이 남은 펼치기 작업은 다른 워커가 맡지 않는다 (ADR-0004, 0006)', async () => {
     fake.users = userIds(50);
     const alarm = await insertAlarm(database.db, {

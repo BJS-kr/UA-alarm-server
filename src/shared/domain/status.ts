@@ -12,6 +12,13 @@ export const AlarmStatus = {
 } as const;
 export type AlarmStatus = (typeof AlarmStatus)[keyof typeof AlarmStatus];
 
+/** 알림이 취소된 이유 (ADR-0006, 0017). 운영자가 사람이 취소한 것과 시스템이 멈춘 것을 구별한다. */
+export const CancelReason = {
+  REQUESTED: 'REQUESTED',
+  EXPANSION_FAILED: 'EXPANSION_FAILED',
+} as const;
+export type CancelReason = (typeof CancelReason)[keyof typeof CancelReason];
+
 export const DeliveryStatus = {
   PENDING: 'PENDING',
   IN_FLIGHT: 'IN_FLIGHT',
