@@ -111,7 +111,10 @@ export class Dispatcher {
       this.track(this.sendOne(delivery, leaseDeadline, grant.isProbe));
     }
 
-    return 'busy';
+    // 통을 비웠으면 다음 토큰이 생길 때까지 묻지 않는다. 바로 다시 물으면 거의 늘 0개라 헛된 갱신만 생긴다 (ADR-0009).
+    const isBucketDrained = grant.waitMs > 0;
+
+    return isBucketDrained ? { sleepMs: grant.waitMs } : 'busy';
   }
 
   /**

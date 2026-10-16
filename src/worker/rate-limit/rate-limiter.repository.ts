@@ -9,7 +9,7 @@ const SINGLE_ROW = 1;
 
 export interface AcquireResult {
   granted: number;
-  /** 0개를 받았을 때 다음 토큰이 생기거나, 정지나 시험 발송이 끝나기까지 남은 시간 */
+  /** 다음 토큰이 생기거나 정지·시험 발송이 끝나기까지 남은 시간. 받고도 통에 토큰이 남았으면 0이다 */
   waitMs: number;
   /** 이 토큰이 브레이커가 열린 뒤의 시험 발송이다. 결과를 반드시 알려야 한다. */
   isProbe: boolean;
@@ -77,8 +77,8 @@ export class RateLimiterRepository {
       RETURNING p.granted, p.is_probe, p.breaker_open,
                 CASE WHEN p.ts < p.paused_until THEN EXTRACT(EPOCH FROM p.paused_until - p.ts)::float8 * 1000
                      WHEN p.breaker_open AND p.ts < p.probe_until THEN EXTRACT(EPOCH FROM p.probe_until - p.ts)::float8 * 1000
-                     WHEN p.granted = 0 THEN GREATEST(0, 1 - p.avail) / ${ratePerSec}::float8 * 1000
-                     ELSE 0 END AS wait_ms`);
+                     -- 받은 뒤 통이 비었으면 다음 토큰까지 남은 시간이다. 남은 토큰이 1개 이상이면 0.
+                     ELSE GREATEST(0, 1 - (p.avail - p.granted)) / ${ratePerSec}::float8 * 1000 END AS wait_ms`);
     const row = result.rows[0];
 
     return {
