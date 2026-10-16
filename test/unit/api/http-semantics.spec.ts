@@ -11,6 +11,7 @@ const document = {
     '/v1/alarms': { get: {}, post: {} },
     '/v1/alarms/{id}': { get: {}, parameters: [] },
     '/v1/alarms/{id}/send': { post: {} },
+    '/v1/things/{id}': { put: {}, delete: {}, patch: {} },
   },
 } as unknown as OpenAPIObject;
 
@@ -48,6 +49,9 @@ describe('메서드가 틀린 요청은 405 (ADR-0020)', () => {
     expect(problem?.problem.headers).toEqual({ Allow: 'GET, POST, HEAD' });
     expect(call('GET', '/v1/alarms/abc/send')?.problem.headers).toEqual({
       Allow: 'POST',
+    });
+    expect(call('GET', '/v1/things/1')?.problem.headers).toEqual({
+      Allow: 'PUT, DELETE, PATCH',
     });
     // 경로 항목의 parameters 같은 칸은 메서드가 아니다.
     expect(call('PUT', '/v1/alarms/abc')?.problem.headers).toEqual({
