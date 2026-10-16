@@ -6,6 +6,8 @@ export const ProblemType = {
   BAD_REQUEST: '/problems/bad-request',
   UNAUTHORIZED: '/problems/unauthorized',
   NOT_FOUND: '/problems/not-found',
+  METHOD_NOT_ALLOWED: '/problems/method-not-allowed',
+  UNSUPPORTED_MEDIA_TYPE: '/problems/unsupported-media-type',
   INVALID_STATE: '/problems/invalid-state',
   INTERNAL_ERROR: '/problems/internal-error',
   SERVICE_UNAVAILABLE: '/problems/service-unavailable',
@@ -23,6 +25,8 @@ export interface Problem {
   detail?: string;
   /** 표준이 허용하는 확장 필드. 필요한 곳에만 붙인다. */
   extensions?: Record<string, unknown>;
+  /** 응답에 함께 실을 헤더(405의 Allow 등). */
+  headers?: Record<string, string>;
 }
 
 export class ProblemException extends HttpException {
@@ -48,6 +52,25 @@ export function badRequest(detail: string): ProblemException {
     type: ProblemType.BAD_REQUEST,
     title: 'Bad request',
     detail,
+  });
+}
+
+/** 경로는 있는데 메서드가 틀렸다. Allow에 쓸 수 있는 메서드를 싣는다 (ADR-0020). */
+export function methodNotAllowed(allow: string[]): ProblemException {
+  return new ProblemException(405, {
+    type: ProblemType.METHOD_NOT_ALLOWED,
+    title: 'Method not allowed',
+    detail: `Allowed methods: ${allow.join(', ')}`,
+    headers: { Allow: allow.join(', ') },
+  });
+}
+
+/** 본문이 JSON이 아니다 (ADR-0020). */
+export function unsupportedMediaType(): ProblemException {
+  return new ProblemException(415, {
+    type: ProblemType.UNSUPPORTED_MEDIA_TYPE,
+    title: 'Unsupported media type',
+    detail: 'Send the request body as application/json',
   });
 }
 

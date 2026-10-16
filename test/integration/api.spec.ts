@@ -177,6 +177,46 @@ describe('API (ADR-0015, 0016, 0019~0024)', () => {
     expect(res.json.type).toBe('/problems/bad-request');
   });
 
+  it('경로는 있는데 메서드가 틀리면 404가 아니라 405와 Allow 헤더로 답한다 (ADR-0020)', async () => {
+    const collection = await call('DELETE', '/v1/alarms');
+
+    expect(collection.status).toBe(405);
+    expect(collection.headers.get('allow')).toBe('GET, POST, HEAD');
+    expect(collection.json).toMatchObject({
+      type: '/problems/method-not-allowed',
+      status: 405,
+    });
+
+    const action = await call(
+      'GET',
+      '/v1/alarms/0193a1b2-0000-7000-8000-000000000000/send',
+    );
+
+    expect(action.status).toBe(405);
+    expect(action.headers.get('allow')).toBe('POST');
+
+    const unknown = await call('DELETE', '/v1/nothing');
+
+    expect(unknown.status).toBe(404);
+  });
+
+  it('본문이 JSON이 아니면 필드 검증 400이 아니라 415로 답한다 (ADR-0020)', async () => {
+    const res = await fetch(`${base}/v1/alarms`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'text/plain',
+        authorization: `Bearer ${KEY}`,
+      },
+      body: '{"type":"BULK","title":"t","body":"b"}',
+    });
+
+    expect(res.status).toBe(415);
+    expect(await res.json()).toMatchObject({
+      type: '/problems/unsupported-media-type',
+      status: 415,
+    });
+  });
+
   it('NUL이 든 수신자 커서는 400이다', async () => {
     const alarm = await insertAlarm(database.db, {
       type: 'BULK',

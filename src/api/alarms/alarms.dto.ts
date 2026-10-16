@@ -19,6 +19,7 @@ import {
   CancelReason,
   DeliveryStatus,
 } from '../../shared/domain/status';
+import { ProblemType } from '../errors/problem';
 import { CharLength, NoNulCharacter } from '../http/validation';
 
 const NOT_BLANK = /\S/;
@@ -201,6 +202,7 @@ class FieldErrorView {
 export class ProblemView {
   @ApiProperty({
     example: '/problems/invalid-state',
+    enum: Object.values(ProblemType),
     description: '에러 종류. 클라이언트는 이 값으로 분기한다',
   })
   type!: string;

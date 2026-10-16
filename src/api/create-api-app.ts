@@ -3,6 +3,10 @@ import { NestFactory } from '@nestjs/core';
 import { Pool } from 'pg';
 import { AppConfig } from '../shared/config/app-config';
 import { ApiModule } from './api.module';
+import {
+  jsonBodyMiddleware,
+  methodNotAllowedMiddleware,
+} from './http/http-semantics.middleware';
 import { traceMiddleware } from './http/trace.middleware';
 import { setupOpenApi } from './openapi';
 
@@ -17,7 +21,9 @@ export async function createApiApp(
   });
 
   app.use(traceMiddleware(logger));
-  setupOpenApi(app);
+  const document = setupOpenApi(app);
+
+  app.use(methodNotAllowedMiddleware(document), jsonBodyMiddleware());
 
   return app;
 }

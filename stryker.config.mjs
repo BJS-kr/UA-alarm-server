@@ -14,6 +14,7 @@ export default {
     'src/shared/config/app-config.ts',
     'src/shared/external/external-api.client.ts',
     'src/api/http/trace.middleware.ts',
+    'src/api/http/http-semantics.middleware.ts',
   ],
   reporters: ['clear-text', 'progress', 'html'],
   htmlReporter: { fileName: 'reports/mutation/index.html' },

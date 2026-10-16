@@ -34,6 +34,7 @@ export class ProblemDetailsFilter implements ExceptionFilter {
 
     const isUnauthorized = status === 401;
     if (isUnauthorized) res.setHeader('WWW-Authenticate', 'Bearer');
+    res.set(problem.headers ?? {});
 
     res
       .status(status)

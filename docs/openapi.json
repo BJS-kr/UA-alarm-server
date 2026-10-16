@@ -667,6 +667,17 @@
           "type": {
             "type": "string",
             "example": "/problems/invalid-state",
+            "enum": [
+              "/problems/validation-failed",
+              "/problems/bad-request",
+              "/problems/unauthorized",
+              "/problems/not-found",
+              "/problems/method-not-allowed",
+              "/problems/unsupported-media-type",
+              "/problems/invalid-state",
+              "/problems/internal-error",
+              "/problems/service-unavailable"
+            ],
             "description": "에러 종류. 클라이언트는 이 값으로 분기한다"
           },
           "title": {

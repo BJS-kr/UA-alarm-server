@@ -26,6 +26,7 @@ describe('설정 검증 (ADR-0030)', () => {
     expect(config.RECONCILE_DELAY_MS).toBe(5_000);
     expect(config.DELIVERY_LEASE_MS).toBe(30_000);
     expect(config.TASK_LEASE_MS).toBe(30_000);
+    expect(config.DB_QUERY_TIMEOUT_MS).toBe(10_000);
   });
 
   it('환경변수 문자열을 숫자로 바꾼다', () => {
@@ -48,6 +49,16 @@ describe('설정 검증 (ADR-0030)', () => {
     expect(() =>
       loadConfig({ ...base, TASK_LEASE_MS: '5000' }, 'worker'),
     ).toThrow(/USERS_TIMEOUT_MS < TASK_LEASE_MS/);
+  });
+
+  it('api의 쿼리 한도가 멈춘 워커의 잠금이 풀리는 시간보다 길지 않으면 시작하지 않는다', () => {
+    expect(() =>
+      loadConfig({ ...base, DB_QUERY_TIMEOUT_MS: '5000' }, 'api'),
+    ).toThrow(/DB_QUERY_TIMEOUT_MS > IDLE_TX_TIMEOUT_MS/);
+    expect(
+      loadConfig({ ...base, DB_QUERY_TIMEOUT_MS: '5001' }, 'api')
+        .DB_QUERY_TIMEOUT_MS,
+    ).toBe(5001);
   });
 
   it('한 번에 꺼내는 수가 동시 발송 한도를 넘으면 시작하지 않는다', () => {

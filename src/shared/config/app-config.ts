@@ -67,8 +67,9 @@ export class AppConfig {
   @IsOptional() @IsString() API_KEY?: string = undefined;
 
   // api의 DB 대기 한도. 요청마다 반드시 응답하기 위해서다 (ADR-0039).
+  // 쿼리는 ms 단위라 짧게 두되, 멈춘 워커가 쥔 알림 행 잠금이 풀리는 시간(트랜잭션 유휴 한도)보다는 길게 둔다.
   @Type(() => Number) @IsInt() @Min(100) DB_ACQUIRE_TIMEOUT_MS = 5_000;
-  @Type(() => Number) @IsInt() @Min(100) DB_QUERY_TIMEOUT_MS = 30_000;
+  @Type(() => Number) @IsInt() @Min(100) DB_QUERY_TIMEOUT_MS = 10_000;
 }
 
 /** 값 하나가 아니라 값 사이의 관계가 깨지면 안전성이 무너지는 항목들 (ADR-0030). */
@@ -100,6 +101,15 @@ function relationErrors(config: AppConfig, role: ProcessRole): string[] {
   if (!isBreakerRangeValid) {
     errors.push(
       'BREAKER_PAUSE_MIN_MS <= BREAKER_PAUSE_MAX_MS is required (ADR-0014)',
+    );
+  }
+
+  // 발송 시작과 취소는 알림 행을 바꾸므로, 트랜잭션 도중 멈춘 워커가 쥔 잠금을 Postgres가 풀 때까지 기다릴 수 있다 (ADR-0004, 0039).
+  const isQueryOutlastingStuckLock =
+    config.DB_QUERY_TIMEOUT_MS > config.IDLE_TX_TIMEOUT_MS;
+  if (!isQueryOutlastingStuckLock) {
+    errors.push(
+      'DB_QUERY_TIMEOUT_MS > IDLE_TX_TIMEOUT_MS is required (ADR-0039)',
     );
   }
 
