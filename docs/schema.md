@@ -92,7 +92,7 @@
 
 테이블이 없다. `pg_locks`의 advisory lock과 `pg_stat_activity`가 명단이다(ADR-0004).
 
-## DB 계정 (docker/postgres/init.sql)
+## DB 계정 (docker/postgres/init.sh)
 
 | 계정 | 권한 | 쓰는 곳 |
 | --- | --- | --- |
