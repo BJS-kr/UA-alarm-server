@@ -123,6 +123,27 @@ describe('외부 발송 API 응답 분류', () => {
     }
   });
 
+  it('응답 한도보다 오래 멈췄다 깨어나도, 그사이 도착한 응답은 타임아웃이 아니라 응답으로 읽는다', async () => {
+    // 응답을 보낸 직후 이벤트 루프를 응답 한도보다 오래 막는다. 깨어나면 만료된 타이머가 소켓보다 먼저 돈다.
+    const server = await serve((_req, res) => {
+      res.writeHead(202).end('{"messageId":"m_1"}');
+      const until = Date.now() + 300;
+
+      while (Date.now() < until);
+    });
+    const client = new ExternalApiClient(server.url, 5);
+
+    try {
+      expect(await client.sendMessage(input, 100)).toEqual({
+        kind: 'accepted',
+        messageId: 'm_1',
+      });
+    } finally {
+      client.close();
+      await server.close();
+    }
+  });
+
   it('발송 내역 조회와 사용자 조회를 해석한다', async () => {
     const server = await serve((req, res) => {
       if (req.url?.startsWith('/v1/messages')) {

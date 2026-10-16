@@ -244,15 +244,21 @@ export class ExternalApiClient {
           );
         },
       );
-      const timer = setTimeout(() => {
-        finish({
-          kind: 'error',
-          flushed: isFlushed,
-          code: 'CLIENT_TIMEOUT',
-          message: `No response within ${timeoutMs}ms`,
-        });
-        req.destroy();
-      }, timeoutMs);
+      // 응답 한도보다 오래 멈췄다 깨어난 프로세스는 만료된 타이머를 소켓보다 먼저 실행한다. 한 번 양보해
+      // 그사이 도착한 응답을 먼저 읽는다. 그러지 않으면 외부가 멀쩡해도 타임아웃이 몰려 서킷 브레이커가 열린다 (ADR-0014).
+      const timer = setTimeout(
+        () =>
+          setImmediate(() => {
+            finish({
+              kind: 'error',
+              flushed: isFlushed,
+              code: 'CLIENT_TIMEOUT',
+              message: `No response within ${timeoutMs}ms`,
+            });
+            req.destroy();
+          }),
+        timeoutMs,
+      );
 
       req.on('error', (err: NodeJS.ErrnoException) =>
         finish({

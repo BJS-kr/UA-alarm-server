@@ -531,4 +531,14 @@ export const SABOTAGES = [
     test: COMPLETION_TEST,
     name: '기한이 남은 취소 정리는 다른 워커가 맡지 않는다',
   },
+  {
+    id: 'S59',
+    adr: '0014',
+    what: '타이머가 끝나면 양보하지 않고 바로 타임아웃으로 판정한다(멈췄다 깨어나면 이미 도착한 응답도 타임아웃이 된다)',
+    file: 'src/shared/external/external-api.client.ts',
+    find: 'setImmediate(() => {',
+    replace: 'queueMicrotask(() => {',
+    test: 'test/unit/shared/external-api.client.spec.ts',
+    name: '그사이 도착한 응답은 타임아웃이 아니라 응답으로 읽는다',
+  },
 ];
