@@ -56,7 +56,7 @@ export class Expander {
   }
 
   private async tick(): Promise<Tick> {
-    const task = await this.repository.claim();
+    const task = await this.repository.claim(this.config.TASK_LEASE_MS);
     const isIdle = task === undefined;
     if (isIdle) return 'idle';
     await withLogContext({ alarmId: task.alarmId }, () => this.expand(task));
@@ -71,6 +71,19 @@ export class Expander {
     this.logger.log('Expansion started', { fromCursor: cursor });
 
     while (!this.loop.isStopping) {
+      // 사용자 API를 부르기 전마다 기한을 연장한다. 취소됐거나 넘겨받혔으면 연장되지 않으므로 멈춘다 (ADR-0004, 0017).
+      const isStillMine = await this.repository.renew(
+        task,
+        this.config.TASK_LEASE_MS,
+      );
+      if (!isStillMine) {
+        this.logger.log(
+          'Expansion stopped because the alarm was canceled or taken over',
+        );
+
+        return;
+      }
+
       const page = await this.client.listUsers(
         cursor,
         this.config.USERS_PAGE_SIZE,
@@ -89,6 +102,12 @@ export class Expander {
           code: page.code,
           delayMs,
         });
+        // 기다리는 동안 넘겨받히지 않도록 기다릴 시간만큼 기한을 늘린다.
+        const isStillMineWhileWaiting = await this.repository.renew(
+          task,
+          delayMs + this.config.TASK_LEASE_MS,
+        );
+        if (!isStillMineWhileWaiting) return;
         await sleep(delayMs);
         continue;
       }
@@ -99,6 +118,9 @@ export class Expander {
       if (isFinished) return;
       cursor = page.nextCursor;
     }
+
+    // 정상 종료로 멈췄다. 담당을 내려놓아 다른 워커가 기한을 기다리지 않고 이어 가게 한다 (ADR-0007).
+    await this.repository.release(task);
   }
 
   private async savePage(

@@ -38,8 +38,10 @@ export const alarms = pgTable(
     expansionCursor: text('expansion_cursor'),
     expansionDone: boolean('expansion_done').notNull().default(false),
     expansionOwner: bigint('expansion_owner', { mode: 'number' }),
+    expansionLeaseUntil: timestamp('expansion_lease_until', tz),
     cleanupDone: boolean('cleanup_done').notNull().default(false),
     cleanupOwner: bigint('cleanup_owner', { mode: 'number' }),
+    cleanupLeaseUntil: timestamp('cleanup_lease_until', tz),
     createdAt: timestamp('created_at', tz).notNull().defaultNow(),
     startedAt: timestamp('started_at', tz),
     finishedAt: timestamp('finished_at', tz),
@@ -96,6 +98,7 @@ export const deliveries = pgTable(
     reconcileAfter: timestamp('reconcile_after', tz),
     owner: bigint('owner', { mode: 'number' }),
     claimedAt: timestamp('claimed_at', tz),
+    leaseUntil: timestamp('lease_until', tz),
     messageId: text('message_id'),
     sentAt: timestamp('sent_at', tz),
     lastErrorCode: text('last_error_code'),
@@ -117,9 +120,9 @@ export const deliveries = pgTable(
     index('deliveries_reconcile_idx')
       .on(t.reconcileAfter)
       .where(sql`status = 'UNCONFIRMED'`),
-    index('deliveries_owner_idx')
-      .on(t.owner)
-      .where(sql`status IN ('IN_FLIGHT', 'UNCONFIRMED')`),
+    index('deliveries_lease_idx')
+      .on(t.leaseUntil)
+      .where(sql`status = 'IN_FLIGHT'`),
     index('deliveries_unfinished_idx')
       .on(t.alarmId)
       .where(sql`status IN ('PENDING', 'IN_FLIGHT', 'UNCONFIRMED')`),

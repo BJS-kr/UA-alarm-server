@@ -1,4 +1,4 @@
-import { and, asc, eq, isNotNull, lte, sql, SQL } from 'drizzle-orm';
+import { and, asc, eq, lt, lte, sql, SQL } from 'drizzle-orm';
 import { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import { Db } from '../../shared/db/database';
 import { dbNow, dbNowPlus } from '../../shared/db/db-clock';
@@ -10,7 +10,6 @@ import {
 } from '../../shared/domain/send-outcome';
 import { AlarmStatus, DeliveryStatus } from '../../shared/domain/status';
 import { withAlarmLock } from '../completion/alarm-lock.repository';
-import { ownerIsGone } from '../lifecycle/workers.repository';
 
 export interface ClaimedDelivery {
   id: number;
@@ -56,9 +55,10 @@ export class DeliveryRepository {
   /**
    * 꺼내기 (ADR-0011, 0012, 0017). 토큰을 받은 개수만큼만 꺼낸다.
    * 긴급 먼저, 먼저 시작한 알림 먼저, 같은 알림 안에서는 원래 순서. 재시도 건은 원래 자리로 돌아온다.
-   * SENDING 알림의 건만 집으므로 취소 1단계가 커밋된 순간부터 그 알림의 건은 꺼내지지 않는다.
+   * SENDING 알림의 건만 집으므로, 취소 1단계가 커밋된 뒤에 시작한 claim 쿼리는 그 알림의 건을 집지 않는다 (ADR-0017).
+   * 꺼낸 건에는 기한(지금 + leaseMs)을 적는다. 기한이 지나도록 결과가 기록되지 않으면 다른 워커가 넘겨받는다 (ADR-0004).
    */
-  async claim(limit: number): Promise<ClaimedDelivery[]> {
+  async claim(limit: number, leaseMs: number): Promise<ClaimedDelivery[]> {
     const picked = this.claimDb.$with('picked').as(
       this.claimDb
         .select({ id: deliveries.id, alarmId: deliveries.alarmId })
@@ -87,6 +87,7 @@ export class DeliveryRepository {
         owner: this.workerId,
         attempts: sql`${deliveries.attempts} + 1`,
         claimedAt: dbNow,
+        leaseUntil: dbNowPlus(leaseMs),
         updatedAt: dbNow,
       })
       .from(picked)
@@ -169,39 +170,40 @@ export class DeliveryRepository {
   }
 
   /**
-   * 넘겨받기 (ADR-0004). owner가 살아 있는 워커 명단(pg_locks)에 없는 IN_FLIGHT 건을 결과 미확정으로 돌린다.
-   * 넘겨받은 시각 + 조회 대기 뒤에 결과 확인을 한다 (ADR-0002).
+   * 넘겨받기 (ADR-0004). 기한이 지나도록 결과가 기록되지 않은 IN_FLIGHT 건을 결과 미확정으로 돌리고 owner를 비운다.
+   * owner를 비우므로 원래 주인이 늦게 보내는 결과 기록은 펜싱에 걸린다.
+   * 보냈는지 모르므로 바로 다시 보내지 않고, 넘겨받은 시각 + 조회 대기 뒤에 결과 확인을 한다 (ADR-0002).
    */
-  async takeOverOrphans(reconcileDelayMs: number): Promise<number> {
-    const orphans = this.db.$with('orphans').as(
+  async takeOverExpired(reconcileDelayMs: number): Promise<number> {
+    const expired = this.db.$with('expired').as(
       this.db
         .select({ id: deliveries.id })
         .from(deliveries)
         .where(
           and(
             eq(deliveries.status, DeliveryStatus.IN_FLIGHT),
-            isNotNull(deliveries.owner),
-            ownerIsGone(deliveries.owner),
+            lt(deliveries.leaseUntil, dbNow),
           ),
         )
         .limit(TAKEOVER_BATCH)
         .for('update', { skipLocked: true }),
     );
     const result = await this.db
-      .with(orphans)
+      .with(expired)
       .update(deliveries)
       .set({
         status: DeliveryStatus.UNCONFIRMED,
         owner: null,
+        leaseUntil: null,
         updatedAt: dbNow,
-        lastErrorCode: 'OWNER_GONE',
+        lastErrorCode: 'LEASE_EXPIRED',
         lastErrorMessage:
-          'Taken over because the worker that was sending it is gone',
+          'Taken over because no result was recorded before the lease expired',
         reconcileAfter: dbNowPlus(reconcileDelayMs),
         lookupFailures: 0,
       })
-      .from(orphans)
-      .where(eq(deliveries.id, orphans.id));
+      .from(expired)
+      .where(eq(deliveries.id, expired.id));
 
     return result.rowCount ?? 0;
   }

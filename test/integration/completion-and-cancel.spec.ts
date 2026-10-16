@@ -39,8 +39,8 @@ describe('완료 판정: 마지막 기록이 같은 트랜잭션에서 판정한
       });
       const first = new DeliveryRepository(database.db, 101);
       const second = new DeliveryRepository(database.db, 102);
-      const [a] = await first.claim(1);
-      const [b] = await second.claim(1);
+      const [a] = await first.claim(1, 30_000);
+      const [b] = await second.claim(1, 30_000);
       const [ra, rb] = await Promise.all([
         first.recordSend(a, { kind: 'sent', messageId: 'm_a' }, 100),
         second.recordSend(b, { kind: 'sent', messageId: 'm_b' }, 100),
@@ -61,7 +61,7 @@ describe('완료 판정: 마지막 기록이 같은 트랜잭션에서 판정한
       expansionDone: false,
     });
     const store = new DeliveryRepository(database.db, 1);
-    const [delivery] = await store.claim(1);
+    const [delivery] = await store.claim(1, 30_000);
 
     await store.recordSend(delivery, { kind: 'sent', messageId: 'm' }, 100);
     expect(await alarmStatus(database.db, alarm.id)).toBe('SENDING');
@@ -70,7 +70,7 @@ describe('완료 판정: 마지막 기록이 같은 트랜잭션에서 판정한
   it('넘겨받힌 뒤 늦게 도착한 기록은 펜싱에 걸려 반영되지 않는다 (ADR-0004)', async () => {
     await insertAlarm(database.db, { type: 'URGENT', recipients: ['u_1'] });
     const stale = new DeliveryRepository(database.db, 7);
-    const [delivery] = await stale.claim(1);
+    const [delivery] = await stale.claim(1, 30_000);
 
     // 다른 워커가 넘겨받아 owner와 시도 번호가 바뀐 상황
     await database.db.execute(
@@ -93,7 +93,7 @@ describe('완료 판정: 마지막 기록이 같은 트랜잭션에서 판정한
   it('429는 시도 횟수를 되돌리고 바로 대기로 돌린다 (ADR-0014)', async () => {
     await insertAlarm(database.db, { type: 'URGENT', recipients: ['u_1'] });
     const store = new DeliveryRepository(database.db, 1);
-    const [delivery] = await store.claim(1);
+    const [delivery] = await store.claim(1, 30_000);
 
     await store.recordSend(
       delivery,
@@ -138,7 +138,7 @@ describe('완료 판정: 마지막 기록이 같은 트랜잭션에서 판정한
 
       return decision;
     };
-    const [first] = await store.claim(1);
+    const [first] = await store.claim(1, 30_000);
 
     await store.recordSend(
       first,
@@ -159,7 +159,7 @@ describe('완료 판정: 마지막 기록이 같은 트랜잭션에서 판정한
     expect(await reconcileNow({ kind: 'ok', messages: [] })).toEqual({
       kind: 'resend',
     });
-    const [second] = await store.claim(1);
+    const [second] = await store.claim(1, 30_000);
 
     await store.recordSend(
       second,
@@ -204,7 +204,7 @@ describe('취소 (ADR-0017)', () => {
       recipients: ['p1', 'p2', 'f1'],
     });
     const store = new DeliveryRepository(database.db, 1);
-    const inFlight = (await store.claim(10)).filter(
+    const inFlight = (await store.claim(10, 30_000)).filter(
       (d) => d.recipientId === 'f1',
     )[0];
 
@@ -240,7 +240,7 @@ describe('취소 (ADR-0017)', () => {
       recipients: ['f1'],
     });
     const store = new DeliveryRepository(database.db, 1);
-    const [delivery] = await store.claim(1);
+    const [delivery] = await store.claim(1, 30_000);
 
     await database.db.execute(
       sql`UPDATE alarms SET status = 'CANCELING' WHERE id = ${alarm.id}`,

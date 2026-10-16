@@ -2,7 +2,6 @@ import { ChildProcess, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import { sql } from 'drizzle-orm';
-import { Client } from 'pg';
 import { createDb, createPool } from '../../src/shared/db/database';
 import { SendResult } from '../../src/shared/domain/send-outcome';
 import { clientRefOf } from '../../src/shared/domain/status';
@@ -10,10 +9,10 @@ import { ExternalApiClient } from '../../src/shared/external/external-api.client
 import { SendBreaker } from '../../src/worker/breaker/send-breaker';
 import { DeliveryRepository } from '../../src/worker/dispatch/delivery.repository';
 import { Dispatcher } from '../../src/worker/dispatch/dispatcher';
-import { workerApplicationName } from '../../src/worker/lifecycle/worker-identity';
-import { WorkerSession } from '../../src/worker/lifecycle/worker-session';
 import { WorkerMetrics } from '../../src/worker/metrics/worker-metrics';
 import { TokenBucket } from '../../src/worker/rate-limit/token-bucket';
+import { sleep } from '../../src/worker/runtime/loop-utils';
+import { createWorkerPool } from '../../src/worker/runtime/worker-runtime';
 import { FakeExternalApi } from './support/fake-external-api';
 import {
   alarmStatus,
@@ -60,37 +59,6 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
     await database.drop();
   });
 
-  /** 워커처럼 잠금을 잡은 세션. 생존 신호를 보내지 않으면 멈춘 워커와 같다. */
-  async function fakeWorkerSession(
-    workerId: number,
-    heartbeat: boolean,
-  ): Promise<{ client: Client; lost: Promise<void> }> {
-    const client = new Client({
-      connectionString: database.url,
-      application_name: workerApplicationName(workerId, 'lock'),
-    });
-    let markLost!: () => void;
-    const lost = new Promise<void>((resolve) => (markLost = resolve));
-
-    client.on('error', () => markLost());
-    client.on('end', () => markLost());
-    await client.connect();
-    await client.query('SELECT pg_advisory_lock($1)', [workerId]);
-    const timer = heartbeat
-      ? setInterval(
-          () => void client.query('SELECT 1').catch(() => undefined),
-          100,
-        )
-      : undefined;
-
-    extras.push(async () => {
-      clearInterval(timer);
-      await client.end();
-    });
-
-    return { client, lost };
-  }
-
   /** 컴파일된 워커를 별도 프로세스로 띄운다. 워커가 남긴 로그(JSON 줄)를 함께 돌려준다. */
   function spawnWorker(): { child: ChildProcess; logs: () => string } {
     const child = spawn(process.execPath, [COMPILED_WORKER], {
@@ -102,10 +70,12 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
         RATE_LIMIT_PER_SEC: '100',
         RATE_BUCKET_CAPACITY: '10',
         SEND_TIMEOUT_MS: '2000',
+        USERS_TIMEOUT_MS: '1000',
         RECONCILE_DELAY_MS: '100',
-        HEARTBEAT_INTERVAL_MS: '100',
-        SEND_GUARD_MS: '400',
-        INVALIDATE_AFTER_MS: '1500',
+        DELIVERY_LEASE_MS: '2500',
+        TASK_LEASE_MS: '2500',
+        HOUSEKEEPING_INTERVAL_MS: '100',
+        IDLE_TX_TIMEOUT_MS: '1000',
         IDLE_POLL_MS: '30',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -139,32 +109,32 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
     return worker;
   }
 
+  /** 다른 워커가 건을 쥔 상태를 만든다. leaseMs가 0 이하면 이미 기한이 지났다. */
   async function claimAs(
     workerId: number,
     alarmId: string,
     recipients: string[],
+    leaseMs: number,
   ): Promise<void> {
     await database.db.execute(sql`
-      UPDATE deliveries SET status = 'IN_FLIGHT', owner = ${workerId}, attempts = 1, claimed_at = clock_timestamp()
+      UPDATE deliveries SET status = 'IN_FLIGHT', owner = ${workerId}, attempts = 1, claimed_at = clock_timestamp(),
+             lease_until = clock_timestamp() + make_interval(secs => ${leaseMs / 1000})
        WHERE alarm_id = ${alarmId} AND recipient_id IN (${sql.join(
          recipients.map((r) => sql`${r}`),
          sql`, `,
        )})`);
   }
 
-  it('멈춘 워커는 무효로 선언되고, 넘겨받은 건 중 이미 보낸 건은 다시 보내지 않는다', async () => {
-    const frozenId = 4242;
-    const frozen = await fakeWorkerSession(frozenId, false);
+  it('기한이 지난 건은 넘겨받고, 그중 이미 보낸 건은 다시 보내지 않는다', async () => {
     const alarm = await insertAlarm(database.db, {
       type: 'URGENT',
       recipients: ['r1', 'r2', 'r3'],
     });
 
-    await claimAs(frozenId, alarm.id, ['r1', 'r2']);
+    await claimAs(4242, alarm.id, ['r1', 'r2'], -1000);
     fake.preRecord(clientRefOf(alarm.id, 'r1'), 'r1'); // r1은 멈추기 직전에 보냈다
 
-    await workers.push(await startWorker(testConfig(database.url, fakeUrl)));
-    await frozen.lost; // 무효 선언으로 멈춘 워커의 세션이 끊긴다
+    workers.push(await startWorker(testConfig(database.url, fakeUrl)));
     await waitFor(
       async () => (await alarmStatus(database.db, alarm.id)) === 'COMPLETED',
       15_000,
@@ -189,30 +159,47 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
     expect(metrics).toContain('alarm_takeovers_total 2');
   });
 
-  it('알림 행 잠금을 쥔 채 멈춘 워커도 무효로 선언되고, 발송이 끝까지 간다', async () => {
-    const frozenId = 4545;
+  it('기한이 남은 건은 넘겨받지 않는다', async () => {
+    const alarm = await insertAlarm(database.db, {
+      type: 'URGENT',
+      recipients: ['r1', 'r2'],
+    });
 
-    await fakeWorkerSession(frozenId, false);
+    await claimAs(4343, alarm.id, ['r1'], 60_000);
+
+    workers.push(await startWorker(testConfig(database.url, fakeUrl)));
+    await waitFor(
+      async () => (await deliveryStatuses(database.db, alarm.id)).r2 === 'SENT',
+    );
+    await sleep(1000); // 넘겨받기 루프(0.1초 주기)가 여러 번 돌 시간
+    expect((await deliveryStatuses(database.db, alarm.id)).r1).toBe(
+      'IN_FLIGHT',
+    );
+    expect(fake.received.filter((r) => r.recipientId === 'r1')).toHaveLength(0);
+  });
+
+  it('트랜잭션 도중 멈춘 워커가 쥔 알림 행 잠금은 Postgres가 풀고, 발송이 끝까지 간다', async () => {
+    const config = testConfig(database.url, fakeUrl);
     const recipients = Array.from({ length: 40 }, (_, i) => `r${i}`);
     const alarm = await insertAlarm(database.db, {
       type: 'URGENT',
       recipients,
     });
-    // 멈춘 워커의 풀 연결이 결과 기록 트랜잭션 도중(알림 행을 잠근 채) 멈췄다. 다른 워커의 결과 기록은 이 잠금을 기다린다.
-    const stuck = new Client({
-      connectionString: database.url,
-      application_name: workerApplicationName(frozenId, 'pool'),
-    });
+    // 워커와 같은 설정의 연결이 결과 기록 트랜잭션 도중(알림 행을 잠근 채) 멈췄다. 다른 워커의 결과 기록은 이 잠금을 기다린다.
+    const frozenPool = createWorkerPool(config, 4545, 1);
+    const frozen = await frozenPool.connect();
 
-    stuck.on('error', () => undefined);
-    await stuck.connect();
-    extras.push(() => stuck.end());
-    await stuck.query('BEGIN');
-    await stuck.query('SELECT 1 FROM alarms WHERE id = $1 FOR NO KEY UPDATE', [
+    frozen.on('error', () => undefined);
+    extras.push(async () => {
+      frozen.release(true);
+      await frozenPool.end();
+    });
+    await frozen.query('BEGIN');
+    await frozen.query('SELECT 1 FROM alarms WHERE id = $1 FOR NO KEY UPDATE', [
       alarm.id,
     ]);
 
-    workers.push(await startWorker(testConfig(database.url, fakeUrl)));
+    workers.push(await startWorker(config));
     await waitFor(
       async () => (await alarmStatus(database.db, alarm.id)) === 'COMPLETED',
       20_000,
@@ -224,7 +211,7 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
   });
 
   it('빌려 간 DB 연결이 서버 쪽에서 끊겨도 처리되지 않은 오류로 죽지 않는다', async () => {
-    // 무효 선언(pg_terminate_backend)이나 DB 재시작은 트랜잭션 도중의 연결도 끊는다. 풀은 쉬는 연결의 오류만 받아 준다.
+    // 트랜잭션 유휴 한도나 DB 재시작은 트랜잭션 도중의 연결도 끊는다. 풀은 쉬는 연결의 오류만 받아 준다.
     const errors: Error[] = [];
     const pool = createPool(database.url, 'alarm-test:pool', 1, (error) =>
       errors.push(error),
@@ -241,30 +228,8 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
     client.release(true);
   });
 
-  it('생존 신호를 보내는 워커의 건은 넘겨받지 않는다', async () => {
-    const aliveId = 4343;
-
-    await fakeWorkerSession(aliveId, true);
-    const alarm = await insertAlarm(database.db, {
-      type: 'URGENT',
-      recipients: ['r1', 'r2'],
-    });
-
-    await claimAs(aliveId, alarm.id, ['r1']);
-
-    workers.push(await startWorker(testConfig(database.url, fakeUrl)));
-    await waitFor(
-      async () => (await deliveryStatuses(database.db, alarm.id)).r2 === 'SENT',
-    );
-    await new Promise((r) => setTimeout(r, 2500)); // 무효 선언 기준(1.5초)을 넘겨 기다린다
-    expect((await deliveryStatuses(database.db, alarm.id)).r1).toBe(
-      'IN_FLIGHT',
-    );
-    expect(fake.received.filter((r) => r.recipientId === 'r1')).toHaveLength(0);
-  });
-
   (existsSync(COMPILED_WORKER) ? it : it.skip)(
-    '발송 중 강제 종료된 워커의 건을 이어서 정확히 한 번씩 보낸다 (SIGKILL)',
+    '발송 중 강제 종료된 워커의 건을 기한이 지난 뒤 이어서 정확히 한 번씩 보낸다 (SIGKILL)',
     async () => {
       fake.users = userIds(150);
       fake.behavior = () => ({ type: 'accept', delayMs: 300 });
@@ -302,7 +267,7 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
 
   // SIGSTOP은 Windows에 없다. 테스트 컨테이너(Linux)에서 실행된다.
   (existsSync(COMPILED_WORKER) && process.platform !== 'win32' ? it : it.skip)(
-    '멈췄다 깨어난 워커 프로세스는 무효 선언을 알아채고 더 보내지 않은 채 종료한다 (SIGSTOP)',
+    '멈췄다 깨어난 워커 프로세스는 넘겨받힌 건의 결과를 펜싱에 막히고, 종료하지 않고 계속 일한다 (SIGSTOP)',
     async () => {
       fake.users = userIds(150);
       fake.behavior = () => ({ type: 'accept', delayMs: 300 });
@@ -312,14 +277,10 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
       });
 
       const { child, logs } = await spawnSendingWorker();
-      // 'exit'는 표준 출력을 다 읽기 전에 올 수 있다. 종료 사유 로그까지 보려면 'close'를 기다린다.
-      const exited = new Promise<number | null>((resolve) =>
-        child.once('close', (code) => resolve(code)),
-      );
 
       process.kill(child.pid!, 'SIGSTOP');
 
-      // 멈춘 동안 다른 워커가 무효로 선언하고 넘겨받는다. 넘겨받은 건은 결과 확인 대기(3초) 뒤에 조회한다.
+      // 멈춘 동안 기한(2.5초)이 지나 다른 워커가 넘겨받는다. 넘겨받은 건은 결과 확인 대기(3초) 뒤에 조회한다.
       const survivor = await startWorker(
         testConfig(database.url, fakeUrl, { RECONCILE_DELAY_MS: '3000' }),
       );
@@ -327,18 +288,13 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
       workers.push(survivor);
       await waitFor(
         async () =>
-          (await survivor.runtime.metrics.invalidations.get()).values[0]
-            ?.value > 0,
+          (await survivor.runtime.metrics.takeovers.get()).values[0]?.value > 0,
       );
 
-      // 무효로 선언된 직후, 결과 확인 대기가 끝나기 전에 깨운다. 설계가 약속하는 범위다(ADR-0002, 0004).
+      // 넘겨받은 직후, 결과 확인 대기가 끝나기 전에 깨운다. 설계가 약속하는 범위다(ADR-0002, 0004).
       // 확인을 통과하고 소켓에 쓰기 직전에 멈췄던 요청이 깨어나며 나가도, 그 기록은 조회보다 먼저 남아 다시 보내지 않는다.
       // 대기보다 오래 멈추면 이 틈에서 중복이 날 수 있다. 문서에 남긴 남은 틈이다.
       process.kill(child.pid!, 'SIGCONT');
-
-      // 깨어난 워커는 잠금을 잃은 것을 알아채고 종료한다. 다른 이유(기록 실패 등)로 죽은 것과 구별하려고 종료 사유를 본다.
-      expect(await exited).toBe(1);
-      expect(logs()).toMatch(/"level":"fatal"[^\n]*Lost the worker lock/);
       await waitFor(
         async () => (await alarmStatus(database.db, alarm.id)) === 'COMPLETED',
         30_000,
@@ -350,6 +306,16 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
           1,
         ]);
       }
+
+      // 멈춘 동안 받아 둔 응답은 깨어난 뒤 기록하려다 펜싱에 걸리고, 조회로 중복이 아님을 확인한다.
+      await waitFor(async () =>
+        logs().includes(
+          'Dropped a result that arrived after the delivery was taken over',
+        ),
+      );
+      // 기한이 지난 건은 이미 남의 것이고 쓰기는 펜싱이 막으므로, 깨어난 워커는 종료하지 않는다.
+      expect(child.exitCode).toBeNull();
+      expect(logs()).not.toMatch(/"level":"fatal"/);
     },
   );
 
@@ -367,7 +333,7 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
 
       first.child.kill('SIGKILL');
       await new Promise((resolve) => first.child.once('exit', resolve));
-      // restart 정책이 같은 컨테이너를 다시 띄운 것과 같다. 새 프로세스가 새 ID를 뽑아야 이전 생의 건을 주인 없는 건으로 본다.
+      // restart 정책이 같은 컨테이너를 다시 띄운 것과 같다. 이전 생의 건은 기한이 지나 넘겨받는다.
       spawnWorker();
       await waitFor(
         async () => (await alarmStatus(database.db, alarm.id)) === 'COMPLETED',
@@ -383,92 +349,40 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
     },
   );
 
-  it('생존 신호가 한동안 확인되지 않으면 발송 직전 확인이 실패한다', async () => {
-    // 생존 신호 간격을 길게 두어 이벤트 루프가 막혀 신호를 못 보낸 상황을 만든다.
-    const session = new WorkerSession(
-      {
-        connectionString: database.url,
-        workerId: 4646,
-        heartbeatIntervalMs: 60_000,
-        heartbeatTimeoutMs: 5_000,
-        sendGuardMs: 200,
-      },
-      new CapturingLogger(),
-      () => undefined,
-    );
-
-    await session.start();
-    extras.push(() => session.stop());
-    expect(session.canSend()).toBe(true);
-    await new Promise((r) => setTimeout(r, 300));
-    expect(session.canSend()).toBe(false);
-  });
-
-  it('생존 신호를 보낸 직후 멈췄다 깨어나면, 늦게 처리된 응답을 방금 확인된 것으로 보지 않는다', async () => {
-    const session = new WorkerSession(
-      {
-        connectionString: database.url,
-        workerId: 4848,
-        heartbeatIntervalMs: 60_000,
-        // 응답 한도를 길게 두어, 응답이 한도 전에 도착해 깨어난 뒤 처리되는 경우를 만든다.
-        heartbeatTimeoutMs: 5_000,
-        sendGuardMs: 200,
-      },
-      new CapturingLogger(),
-      () => undefined,
-    );
-
-    await session.start();
-    extras.push(() => session.stop());
-
-    // 신호를 보낸 직후 이벤트 루프가 300ms 막힌다(멈춘 워커와 같다). 응답은 그사이 도착해 깨어난 뒤에 처리된다.
-    const heartbeat = (
-      session as unknown as { heartbeat(): Promise<void> }
-    ).heartbeat();
-    const blockedUntil = Date.now() + 300;
-
-    while (Date.now() < blockedUntil) {
-      // 이벤트 루프를 막는다
-    }
-
-    await heartbeat;
-    expect(session.canSend()).toBe(false);
-  });
-
-  it('꺼낼 때 확인을 통과했어도, 소켓에 쓰기 직전 확인이 실패하면 보내지 않고 시도 횟수와 브레이커에 세지 않은 채 대기로 돌린다', async () => {
-    const workerId = 4747;
+  it('꺼낸 뒤 소켓에 쓰기 직전에 남은 기한이 모자라면 보내지 않고 시도 횟수와 브레이커에 세지 않은 채 대기로 돌린다', async () => {
+    // 기한 0.7초, 응답 한도 0.5초: 꺼낸 뒤 0.2초 안에 써야 보낼 수 있다.
+    const config = testConfig(database.url, fakeUrl, {
+      DELIVERY_LEASE_MS: '700',
+    });
     const alarm = await insertAlarm(database.db, {
       type: 'URGENT',
       recipients: ['r1'],
     });
-    let allowed = true;
     let requested = false;
     const recorded: SendResult[] = [];
 
-    // 요청을 만든 직후(소켓에 쓰기 전)부터 확인이 실패한다. 연결을 기다리는 사이에 멈췄다 깨어난 경우와 같다.
-    class FlippingClient extends ExternalApiClient {
-      override sendMessage(
+    // 요청을 만들기 전에 0.3초 걸린다. 연결을 기다리는 사이에 멈췄다 깨어난 경우와 같다.
+    // 같은 건을 다시 꺼내지 않도록 첫 요청 뒤에 루프를 멈춘다.
+    class SlowClient extends ExternalApiClient {
+      override async sendMessage(
         ...args: Parameters<ExternalApiClient['sendMessage']>
       ) {
-        allowed = false;
         requested = true;
+        void dispatcher.stop(0);
+        await sleep(300);
 
         return super.sendMessage(...args);
       }
     }
-    const client = new FlippingClient(fakeUrl, 5);
-    const pool = createPool(
-      database.url,
-      workerApplicationName(workerId, 'pool'),
-      2,
-    );
+    const client = new SlowClient(fakeUrl, 5);
+    const pool = createWorkerPool(config, 4747, 2);
     const db = createDb(pool);
+
     const dispatcher = new Dispatcher({
-      config: testConfig(database.url, fakeUrl),
-      deliveries: new DeliveryRepository(db, workerId),
+      config,
+      deliveries: new DeliveryRepository(db, 4747),
       bucket: new TokenBucket(db, 1000, 50),
       client,
-      session: { canSend: () => allowed } as unknown as WorkerSession,
       breaker: {
         record: async (result: SendResult) => {
           recorded.push(result);

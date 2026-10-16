@@ -1,10 +1,9 @@
-import { and, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lt, or } from 'drizzle-orm';
 import { Db } from '../../shared/db/database';
-import { dbNow } from '../../shared/db/db-clock';
+import { dbNow, dbNowPlus } from '../../shared/db/db-clock';
 import { Tx } from '../../shared/db/executor';
 import { alarms, deliveries } from '../../shared/db/schema';
 import { AlarmStatus, DeliveryStatus } from '../../shared/domain/status';
-import { ownerIsGone } from '../lifecycle/workers.repository';
 
 /** 취소 2단계(대기 건 정리)의 저장소 (ADR-0017). 점유 방식은 펼치기와 같다 (ADR-0004). */
 export class CancellationRepository {
@@ -13,8 +12,8 @@ export class CancellationRepository {
     private readonly workerId: number,
   ) {}
 
-  /** 대기 건 정리가 끝나지 않은 CANCELING 알림 하나를 쥔다. 아무도 쥐지 않았거나 주인이 사라진 것만. */
-  async claim(): Promise<string | undefined> {
+  /** 대기 건 정리가 끝나지 않은 CANCELING 알림 하나를 쥔다. 아무도 쥐지 않았거나 기한이 지난 것만. */
+  async claim(leaseMs: number): Promise<string | undefined> {
     const next = this.db
       .select({ id: alarms.id })
       .from(alarms)
@@ -22,14 +21,17 @@ export class CancellationRepository {
         and(
           eq(alarms.status, AlarmStatus.CANCELING),
           eq(alarms.cleanupDone, false),
-          or(isNull(alarms.cleanupOwner), ownerIsGone(alarms.cleanupOwner)),
+          or(isNull(alarms.cleanupOwner), lt(alarms.cleanupLeaseUntil, dbNow)),
         ),
       )
       .limit(1)
       .for('update', { skipLocked: true });
     const [claimed] = await this.db
       .update(alarms)
-      .set({ cleanupOwner: this.workerId })
+      .set({
+        cleanupOwner: this.workerId,
+        cleanupLeaseUntil: dbNowPlus(leaseMs),
+      })
       .where(inArray(alarms.id, next))
       .returning({ id: alarms.id });
 

@@ -30,22 +30,22 @@ const base = {
 };
 
 describe('설정 관계의 경계값 (ADR-0030)', () => {
-  it('생존 신호와 발송 직전 확인이 같으면 거부한다(엄격히 작아야 한다)', () => {
+  it('응답 한도와 발송 기한이 같으면 거부한다(엄격히 작아야 한다)', () => {
     expect(() =>
       loadConfig(
-        { ...base, HEARTBEAT_INTERVAL_MS: '5000', SEND_GUARD_MS: '5000' },
+        { ...base, SEND_TIMEOUT_MS: '30000', DELIVERY_LEASE_MS: '30000' },
         'worker',
       ),
-    ).toThrow(/HEARTBEAT_INTERVAL_MS/);
+    ).toThrow(/DELIVERY_LEASE_MS/);
   });
 
-  it('발송 직전 확인과 무효 선언이 같으면 거부한다', () => {
+  it('사용자 조회 한도와 작업 기한이 같으면 거부한다', () => {
     expect(() =>
       loadConfig(
-        { ...base, SEND_GUARD_MS: '15000', INVALIDATE_AFTER_MS: '15000' },
+        { ...base, USERS_TIMEOUT_MS: '30000', TASK_LEASE_MS: '30000' },
         'worker',
       ),
-    ).toThrow(/INVALIDATE_AFTER_MS/);
+    ).toThrow(/TASK_LEASE_MS/);
   });
 
   it('한 번에 꺼내는 수가 동시 발송 한도와 같은 것은 허용한다', () => {

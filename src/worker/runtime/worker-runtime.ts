@@ -13,7 +13,6 @@ import { Expander } from '../expansion/expander';
 import { ExpansionRepository } from '../expansion/expansion.repository';
 import { Housekeeper } from '../lifecycle/housekeeper';
 import { workerApplicationName } from '../lifecycle/worker-identity';
-import { WorkerSession } from '../lifecycle/worker-session';
 import { WorkerMetrics } from '../metrics/worker-metrics';
 import { TokenBucket } from '../rate-limit/token-bucket';
 import { Reconciler } from '../reconcile/reconciler';
@@ -22,8 +21,28 @@ export interface WorkerRuntimeOptions {
   config: AppConfig;
   workerId: number;
   logger: LoggerService;
-  /** 계속 돌면 정확성이 깨지는 상황. 프로세스를 끝내 잠금을 풀고 넘겨받기 경로로 보낸다 (ADR-0007). */
+  /** 계속 돌면 정확성이 깨지는 상황(결과를 기록할 수 없음). 프로세스를 끝내고, 그 건은 기한이 지나 넘겨받힌다 (ADR-0007). */
   onFatal: (reason: string, error?: unknown) => never;
+}
+
+/**
+ * 워커의 DB 연결 풀. 트랜잭션 도중 멈춘 워커의 세션은 Postgres가 끝내 행 잠금을 푼다 (ADR-0004).
+ * 시간 제한(PoolTimeouts)은 두지 않는다. 멈춘 워커가 쥔 잠금이 풀리기를 기다리는 것은 정상이다.
+ */
+export function createWorkerPool(
+  config: AppConfig,
+  workerId: number,
+  max: number,
+  onConnectionError?: (error: Error) => void,
+): Pool {
+  return createPool(
+    config.DATABASE_URL!,
+    workerApplicationName(workerId),
+    max,
+    onConnectionError,
+    undefined,
+    config.IDLE_TX_TIMEOUT_MS,
+  );
 }
 
 /** 워커 한 대를 이루는 부품을 조립하고, 켜고 끄는 순서를 정한다. */
@@ -32,10 +51,8 @@ export class WorkerRuntime {
   readonly workerId: number;
   private readonly pool: Pool;
   private readonly loopPool: Pool;
-  private readonly housekeepingPool: Pool;
   private readonly db: Db;
   private readonly client: ExternalApiClient;
-  private readonly session: WorkerSession;
   private readonly dispatcher: Dispatcher;
   private readonly reconciler: Reconciler;
   private readonly expander: Expander;
@@ -49,47 +66,15 @@ export class WorkerRuntime {
     const onDbError = (error: Error) =>
       logger.warn('Database connection lost', { error: error.message });
 
-    this.pool = createPool(
-      config.DATABASE_URL!,
-      workerApplicationName(workerId, 'pool'),
-      10,
-      onDbError,
-    );
+    this.pool = createWorkerPool(config, workerId, 10, onDbError);
     this.db = createDb(this.pool);
     // 토큰 받기와 꺼내기 전용. 결과 기록 트랜잭션과 연결을 다투지 않게 따로 둔다.
-    this.loopPool = createPool(
-      config.DATABASE_URL!,
-      workerApplicationName(workerId, 'pool'),
-      2,
-      onDbError,
-    );
+    this.loopPool = createWorkerPool(config, workerId, 2, onDbError);
     const loopDb = createDb(this.loopPool);
-
-    // 무효 선언과 넘겨받기 전용. 다른 워커가 알림 행 잠금을 쥔 채 멈추면, 결과 기록 트랜잭션들이 그 잠금을 기다리며
-    // 기본 풀을 모두 붙잡는다. 그 잠금을 푸는 것이 무효 선언이므로, 무효 선언은 연결을 따로 가져야 한다 (ADR-0004).
-    this.housekeepingPool = createPool(
-      config.DATABASE_URL!,
-      workerApplicationName(workerId, 'pool'),
-      1,
-      onDbError,
-    );
-    const housekeepingDb = createDb(this.housekeepingPool);
 
     this.client = new ExternalApiClient(
       config.EXTERNAL_API_BASE_URL,
       config.MAX_IN_FLIGHT,
-    );
-    this.session = new WorkerSession(
-      {
-        connectionString: config.DATABASE_URL!,
-        workerId,
-        heartbeatIntervalMs: config.HEARTBEAT_INTERVAL_MS,
-        // 응답 없는 생존 신호는 발송 직전 확인과 같은 시간이 지나면 잠금 상실로 본다 (ADR-0004).
-        heartbeatTimeoutMs: config.SEND_GUARD_MS,
-        sendGuardMs: config.SEND_GUARD_MS,
-      },
-      logger,
-      (reason) => onFatal(`Lost the worker lock: ${reason}`),
     );
     const deliveries = new DeliveryRepository(this.db, workerId, loopDb);
     const bucket = new TokenBucket(
@@ -115,7 +100,6 @@ export class WorkerRuntime {
       deliveries,
       bucket,
       client: this.client,
-      session: this.session,
       breaker,
       metrics: this.metrics,
       logger,
@@ -150,9 +134,7 @@ export class WorkerRuntime {
     );
     this.housekeeper = new Housekeeper(
       config,
-      housekeepingDb,
-      new DeliveryRepository(housekeepingDb, workerId, housekeepingDb),
-      workerId,
+      deliveries,
       this.metrics,
       logger,
     );
@@ -160,8 +142,6 @@ export class WorkerRuntime {
 
   async start(): Promise<void> {
     await waitForDatabase(this.pool, this.options.logger);
-    // 잠금부터 잡는다. 잠금 없이 건을 쥐면 다른 워커가 주인 없는 건으로 보고 넘겨받는다.
-    await this.session.start();
     this.housekeeper.start();
     this.dispatcher.start();
     this.reconciler.start();
@@ -176,7 +156,7 @@ export class WorkerRuntime {
 
   /**
    * 정상 종료 (ADR-0007): 새 건을 꺼내지 않고, 보낸 요청의 결과를 기록하고,
-   * 보내지 않은 건은 반납한 뒤, 잠금 연결을 닫는다.
+   * 보내지 않은 건과 펼치기 담당은 반납한 뒤 연결을 닫는다.
    */
   async stop(): Promise<void> {
     this.options.logger.log('Graceful shutdown started');
@@ -187,11 +167,9 @@ export class WorkerRuntime {
       this.canceller.stop(),
       this.housekeeper.stop(),
     ]);
-    await this.session.stop();
     this.client.close();
     await this.pool.end();
     await this.loopPool.end();
-    await this.housekeepingPool.end();
     this.options.logger.log('Graceful shutdown complete');
   }
 }

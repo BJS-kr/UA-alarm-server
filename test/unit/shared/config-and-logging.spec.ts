@@ -24,7 +24,8 @@ describe('설정 검증 (ADR-0030)', () => {
     expect(config.MAX_IN_FLIGHT).toBe(50);
     expect(config.SEND_TIMEOUT_MS).toBe(10_000);
     expect(config.RECONCILE_DELAY_MS).toBe(5_000);
-    expect(config.INVALIDATE_AFTER_MS).toBe(15_000);
+    expect(config.DELIVERY_LEASE_MS).toBe(30_000);
+    expect(config.TASK_LEASE_MS).toBe(30_000);
   });
 
   it('환경변수 문자열을 숫자로 바꾼다', () => {
@@ -40,13 +41,13 @@ describe('설정 검증 (ADR-0030)', () => {
     );
   });
 
-  it('생존 신호 < 발송 직전 확인 < 무효 선언 순서가 깨지면 시작하지 않는다', () => {
+  it('요청 한 번이 기한 안에 끝나지 않는 설정이면 시작하지 않는다', () => {
     expect(() =>
-      loadConfig({ ...base, SEND_GUARD_MS: '20000' }, 'worker'),
-    ).toThrow(/SEND_GUARD_MS/);
+      loadConfig({ ...base, DELIVERY_LEASE_MS: '5000' }, 'worker'),
+    ).toThrow(/SEND_TIMEOUT_MS < DELIVERY_LEASE_MS/);
     expect(() =>
-      loadConfig({ ...base, HEARTBEAT_INTERVAL_MS: '6000' }, 'worker'),
-    ).toThrow(/HEARTBEAT_INTERVAL_MS/);
+      loadConfig({ ...base, TASK_LEASE_MS: '5000' }, 'worker'),
+    ).toThrow(/USERS_TIMEOUT_MS < TASK_LEASE_MS/);
   });
 
   it('한 번에 꺼내는 수가 동시 발송 한도를 넘으면 시작하지 않는다', () => {

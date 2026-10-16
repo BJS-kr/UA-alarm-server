@@ -35,7 +35,7 @@ describe('꺼내기 (ADR-0011, 0012, 0017)', () => {
       attempts: number;
     }> = [];
 
-    for (let i = 0; i < 5; i++) picked.push(...(await store.claim(1)));
+    for (let i = 0; i < 5; i++) picked.push(...(await store.claim(1, 30_000)));
     expect(picked.map((d) => d.recipientId)).toEqual([
       'u1',
       'a1',
@@ -64,7 +64,7 @@ describe('꺼내기 (ADR-0011, 0012, 0017)', () => {
        WHERE alarm_id = ${alarm.id} AND recipient_id = 'r1'`);
     const store = new DeliveryRepository(database.db, 1);
 
-    expect((await store.claim(10)).map((d) => d.recipientId)).toEqual([
+    expect((await store.claim(10, 30_000)).map((d) => d.recipientId)).toEqual([
       'r2',
       'r3',
     ]);
@@ -77,7 +77,7 @@ describe('꺼내기 (ADR-0011, 0012, 0017)', () => {
     await database.db.execute(
       sql`UPDATE deliveries SET next_attempt_at = clock_timestamp() WHERE recipient_id = 'r1'`,
     );
-    const next = await store.claim(10);
+    const next = await store.claim(10, 30_000);
 
     expect(next.map((d) => d.recipientId)).toEqual(['r1', 'l1']);
     expect(next[1].alarmId).toBe(later.id);
@@ -94,7 +94,9 @@ describe('꺼내기 (ADR-0011, 0012, 0017)', () => {
       status: 'CREATED',
       recipients: ['x1'],
     });
-    expect(await new DeliveryRepository(database.db, 1).claim(10)).toEqual([]);
+    expect(
+      await new DeliveryRepository(database.db, 1).claim(10, 30_000),
+    ).toEqual([]);
   });
 
   it('여러 워커가 동시에 꺼내도 같은 건을 두 번 집지 않는다 (SKIP LOCKED)', async () => {
@@ -106,7 +108,9 @@ describe('꺼내기 (ADR-0011, 0012, 0017)', () => {
     let round: number[];
 
     do {
-      const batches = await Promise.all(stores.map((store) => store.claim(10)));
+      const batches = await Promise.all(
+        stores.map((store) => store.claim(10, 30_000)),
+      );
 
       round = batches.flat().map((d) => d.id);
       seen.push(...round);

@@ -51,10 +51,11 @@ export class AppConfig {
   @Type(() => Number) @IsInt() @Min(1) BREAKER_PAUSE_MAX_MS = 60_000;
   @Type(() => Number) @IsInt() @Min(0) BREAKER_STREAK_WINDOW_MS = 60_000;
 
-  // 워커 생존 (ADR-0004, 0011, 0026)
-  @Type(() => Number) @IsInt() @Min(10) HEARTBEAT_INTERVAL_MS = 2_000;
-  @Type(() => Number) @IsInt() @Min(10) SEND_GUARD_MS = 5_000;
-  @Type(() => Number) @IsInt() @Min(10) INVALIDATE_AFTER_MS = 15_000;
+  // 점유 기한과 넘겨받기 (ADR-0004, 0011, 0026)
+  @Type(() => Number) @IsInt() @Min(10) DELIVERY_LEASE_MS = 30_000;
+  @Type(() => Number) @IsInt() @Min(10) TASK_LEASE_MS = 30_000;
+  @Type(() => Number) @IsInt() @Min(10) HOUSEKEEPING_INTERVAL_MS = 2_000;
+  @Type(() => Number) @IsInt() @Min(10) IDLE_TX_TIMEOUT_MS = 5_000;
   @Type(() => Number) @IsInt() @Min(10) IDLE_POLL_MS = 500;
   @Type(() => Number) @IsInt() @Min(10) LIVENESS_STALL_MS = 30_000;
   @Type(() => Number) @IsInt() @Min(0) SHUTDOWN_GRACE_MS = 20_000;
@@ -73,14 +74,15 @@ export class AppConfig {
 /** 값 하나가 아니라 값 사이의 관계가 깨지면 안전성이 무너지는 항목들 (ADR-0030). */
 function relationErrors(config: AppConfig, role: ProcessRole): string[] {
   const errors: string[] = [];
-  // 무효로 선언되기 전에 워커가 먼저 스스로 멈춰야 한다 (ADR-0004).
-  const isLivenessOrdered =
-    config.HEARTBEAT_INTERVAL_MS < config.SEND_GUARD_MS &&
-    config.SEND_GUARD_MS < config.INVALIDATE_AFTER_MS;
-  if (!isLivenessOrdered) {
-    errors.push(
-      'HEARTBEAT_INTERVAL_MS < SEND_GUARD_MS < INVALIDATE_AFTER_MS is required (ADR-0004)',
-    );
+  // 요청 한 번과 사용자 조회 한 번은 기한 안에 끝나야 한다. 정상인 건이 넘겨받히지 않게 하기 위해서다 (ADR-0004).
+  const isSendWithinLease = config.SEND_TIMEOUT_MS < config.DELIVERY_LEASE_MS;
+  if (!isSendWithinLease) {
+    errors.push('SEND_TIMEOUT_MS < DELIVERY_LEASE_MS is required (ADR-0004)');
+  }
+
+  const isFetchWithinLease = config.USERS_TIMEOUT_MS < config.TASK_LEASE_MS;
+  if (!isFetchWithinLease) {
+    errors.push('USERS_TIMEOUT_MS < TASK_LEASE_MS is required (ADR-0004)');
   }
 
   const isBatchWithinInFlight = config.CLAIM_BATCH_MAX <= config.MAX_IN_FLIGHT;

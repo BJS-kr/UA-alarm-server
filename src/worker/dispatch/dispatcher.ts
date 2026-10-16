@@ -5,11 +5,11 @@ import {
   SendDecision,
   SendResult,
 } from '../../shared/domain/send-outcome';
+import { hasLeaseFor } from '../../shared/domain/lease';
 import { clientRefOf } from '../../shared/domain/status';
 import { ExternalApiClient } from '../../shared/external/external-api.client';
 import { withLogContext } from '../../shared/logging/log-context';
 import { SendBreaker } from '../breaker/send-breaker';
-import { WorkerSession } from '../lifecycle/worker-session';
 import { WorkerMetrics } from '../metrics/worker-metrics';
 import { TokenBucket } from '../rate-limit/token-bucket';
 import { durable, monotonicMs, waitAtMost } from '../runtime/loop-utils';
@@ -17,8 +17,6 @@ import { PollingLoop, Tick } from '../runtime/polling-loop';
 import { retryOptions } from '../runtime/retry-options';
 import { ClaimedDelivery, DeliveryRepository } from './delivery.repository';
 
-/** 잠금 확인이 낡았을 때 다시 확인하기까지 쉬는 시간. 생존 신호가 오면 바로 이어 간다. */
-const LOCK_RECHECK_MS = 100;
 /** 토큰이 없을 때 최소로 쉬는 시간. */
 const MIN_TOKEN_WAIT_MS = 5;
 
@@ -27,7 +25,6 @@ export interface DispatcherDeps {
   deliveries: DeliveryRepository;
   bucket: TokenBucket;
   client: ExternalApiClient;
-  session: WorkerSession;
   breaker: SendBreaker;
   metrics: WorkerMetrics;
   logger: LoggerService;
@@ -70,10 +67,7 @@ export class Dispatcher {
   }
 
   private async tick(): Promise<Tick> {
-    const { config, session, bucket, deliveries } = this.deps;
-    const isLockFresh = session.canSend();
-    if (!isLockFresh) return { sleepMs: LOCK_RECHECK_MS };
-
+    const { config, bucket, deliveries } = this.deps;
     const free = config.MAX_IN_FLIGHT - this.inFlight.size;
     const isAtCapacity = free <= 0;
     if (isAtCapacity) {
@@ -93,12 +87,20 @@ export class Dispatcher {
       };
     }
 
-    const claimed = await deliveries.claim(grant.granted);
+    // 기한은 claim 쿼리를 보내기 전의 단조 시계로 잰다. DB가 적는 기한보다 늘 이르므로 워커 쪽 판단이 보수적이다 (ADR-0004).
+    const claimStartedAt = monotonicMs();
+    const claimed = await deliveries.claim(
+      grant.granted,
+      config.DELIVERY_LEASE_MS,
+    );
+    const leaseDeadline = claimStartedAt + config.DELIVERY_LEASE_MS;
     // 꺼낼 건이 없으면 받은 토큰은 버린다. 할 일이 없을 때만 생기므로 처리량 손해가 없다.
     const isNothingToSend = claimed.length === 0;
     if (isNothingToSend) return 'idle';
 
-    for (const delivery of claimed) this.track(this.sendOne(delivery));
+    for (const delivery of claimed) {
+      this.track(this.sendOne(delivery, leaseDeadline));
+    }
 
     return 'busy';
   }
@@ -122,26 +124,33 @@ export class Dispatcher {
     this.deps.metrics.inFlight.set(this.inFlight.size);
   }
 
-  private sendOne(delivery: ClaimedDelivery): Promise<void> {
+  private sendOne(
+    delivery: ClaimedDelivery,
+    leaseDeadline: number,
+  ): Promise<void> {
     return withLogContext(
       {
         alarmId: delivery.alarmId,
         deliveryId: String(delivery.id),
         attempt: delivery.attempts,
       },
-      () => this.sendInContext(delivery),
+      () => this.sendInContext(delivery, leaseDeadline),
     );
   }
 
-  private async sendInContext(delivery: ClaimedDelivery): Promise<void> {
+  private async sendInContext(
+    delivery: ClaimedDelivery,
+    leaseDeadline: number,
+  ): Promise<void> {
     const { config, deliveries, client, metrics, logger, bucket, breaker } =
       this.deps;
+    const canSend = () =>
+      hasLeaseFor(leaseDeadline, monotonicMs(), config.SEND_TIMEOUT_MS);
 
-    // 발송 직전 확인: 잠금 연결이 최근에 확인되지 않았으면 보내지 않고 반납한다 (ADR-0004).
+    // 정상 종료 중에 꺼낸 건은 보내지 않고 반납한다 (ADR-0007).
+    // 남은 기한은 소켓에 쓰기 바로 앞에서 확인한다. 꺼낸 직후보다 늦은 그 시점이 마지막 기회라 한 번이면 된다 (ADR-0004).
     const isShuttingDown = this.loop.isStopping;
-    const isLockFresh = this.deps.session.canSend();
-    const isSendBlocked = isShuttingDown || !isLockFresh;
-    if (isSendBlocked) {
+    if (isShuttingDown) {
       await this.persist(() => deliveries.releaseUnsent(delivery));
 
       return;
@@ -156,7 +165,7 @@ export class Dispatcher {
         clientRef: clientRefOf(delivery.alarmId, delivery.recipientId),
       },
       config.SEND_TIMEOUT_MS,
-      () => this.deps.session.canSend(),
+      canSend,
     );
     const priority = String(delivery.priority);
 

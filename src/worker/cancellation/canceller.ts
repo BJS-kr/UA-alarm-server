@@ -17,7 +17,7 @@ export class Canceller {
   private readonly loop: PollingLoop;
 
   constructor(
-    config: AppConfig,
+    private readonly config: AppConfig,
     private readonly db: Db,
     private readonly repository: CancellationRepository,
     private readonly workerId: number,
@@ -45,7 +45,7 @@ export class Canceller {
   }
 
   private async tick(): Promise<Tick> {
-    const alarmId = await this.repository.claim();
+    const alarmId = await this.repository.claim(this.config.TASK_LEASE_MS);
     const isIdle = alarmId === undefined;
     if (isIdle) return 'idle';
     await withLogContext({ alarmId }, () => this.cleanUp(alarmId));

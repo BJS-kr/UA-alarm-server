@@ -60,13 +60,7 @@ export class WorkerMetrics {
 
   readonly takeovers = new Counter({
     name: 'alarm_takeovers_total',
-    help: '주인이 사라져 넘겨받은 Delivery 수',
-    registers: [this.registry],
-  });
-
-  readonly invalidations = new Counter({
-    name: 'alarm_worker_invalidations_total',
-    help: '이 워커가 무효로 선언해 끊은 세션 수',
+    help: '기한이 지나도록 결과가 기록되지 않아 넘겨받은 Delivery 수',
     registers: [this.registry],
   });
 

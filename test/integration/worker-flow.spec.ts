@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { clientRefOf } from '../../src/shared/domain/status';
+import { sleep } from '../../src/worker/runtime/loop-utils';
 import { FakeExternalApi } from './support/fake-external-api';
 import {
   alarmStatus,
@@ -165,14 +166,15 @@ describe('워커 전체 흐름 (ADR-0002, 0006, 0009, 0011, 0014)', () => {
       expansionDone: false,
     });
 
-    // 죽은 워커(999)가 앞의 두 페이지(100명)를 넣고 커서를 저장한 상태
+    // 기한이 지난 워커(999)가 앞의 두 페이지(100명)를 넣고 커서를 저장한 상태
     for (const user of users.slice(0, 100)) {
       await database.db.execute(sql`
         INSERT INTO deliveries (alarm_id, recipient_id, priority, start_seq) VALUES (${alarm.id}, ${user}, 1, ${alarm.startSeq})`);
     }
 
     await database.db.execute(sql`
-      UPDATE alarms SET expansion_owner = 999, expansion_cursor = ${Buffer.from('100').toString('base64url')} WHERE id = ${alarm.id}`);
+      UPDATE alarms SET expansion_owner = 999, expansion_lease_until = clock_timestamp() - interval '1 second',
+             expansion_cursor = ${Buffer.from('100').toString('base64url')} WHERE id = ${alarm.id}`);
 
     await start();
     await waitFor(
@@ -186,6 +188,22 @@ describe('워커 전체 흐름 (ADR-0002, 0006, 0009, 0011, 0014)', () => {
     for (const user of users) {
       expect(fake.recordsFor(clientRefOf(alarm.id, user))).toBe(1);
     }
+  });
+
+  it('기한이 남은 펼치기 작업은 다른 워커가 맡지 않는다 (ADR-0004, 0006)', async () => {
+    fake.users = userIds(50);
+    const alarm = await insertAlarm(database.db, {
+      type: 'BULK',
+      expansionDone: false,
+    });
+
+    await database.db.execute(sql`
+      UPDATE alarms SET expansion_owner = 999, expansion_lease_until = clock_timestamp() + interval '1 minute'
+       WHERE id = ${alarm.id}`);
+    await start();
+    await sleep(1000);
+
+    expect(await deliveryStatuses(database.db, alarm.id)).toEqual({});
   });
 
   it('발송 중 취소하면 새 발송이 멈추고, 이미 보낸 건은 SENT로 남는다 (ADR-0017)', async () => {
