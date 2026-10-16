@@ -132,7 +132,7 @@ describe('토큰 버킷 (ADR-0009)', () => {
   });
 
   it('한 번에 통 크기 이상은 받지 못한다', async () => {
-    const bucket = new TokenBucket(database.db, 50, 10);
+    const bucket = new TokenBucket(database.db, 50, 10, 30_000);
 
     // 버킷은 마이그레이션 시점에 비어 있다. 0.2초면 통 크기(10)만큼 찬다.
     await new Promise((r) => setTimeout(r, 300));
@@ -145,7 +145,7 @@ describe('토큰 버킷 (ADR-0009)', () => {
   });
 
   it('여러 워커가 동시에 받아도 합계가 충전 속도를 넘지 않는다', async () => {
-    const bucket = new TokenBucket(database.db, 100, 10);
+    const bucket = new TokenBucket(database.db, 100, 10, 30_000);
 
     await bucket.acquire(10); // 처음 차 있는 몫을 비운다
     const started = Date.now();
@@ -170,7 +170,7 @@ describe('토큰 버킷 (ADR-0009)', () => {
   });
 
   it('정지 중에는 토큰을 주지 않고 남은 시간을 알려 준다 (429)', async () => {
-    const bucket = new TokenBucket(database.db, 50, 10);
+    const bucket = new TokenBucket(database.db, 50, 10, 30_000);
 
     // 통이 차 있어야 0개가 "정지라서"인지 "토큰이 없어서"인지 구별된다.
     await new Promise((r) => setTimeout(r, 300));
@@ -181,8 +181,66 @@ describe('토큰 버킷 (ADR-0009)', () => {
     expect(grant.waitMs).toBeGreaterThan(800);
   });
 
+  it('브레이커가 열린 뒤 정지가 풀리면 시험 발송 한 건만 내주고, 닫히면 평소대로 낸다 (ADR-0014)', async () => {
+    const bucket = new TokenBucket(database.db, 50, 10, 30_000);
+    const options = {
+      pauseMinMs: 100,
+      pauseMaxMs: 1000,
+      streakWindowMs: 60_000,
+    };
+
+    await new Promise((r) => setTimeout(r, 300)); // 통이 찬다
+    await bucket.tripBreaker(options);
+    expect(await bucket.acquire(5)).toMatchObject({
+      granted: 0,
+      isBreakerOpen: true,
+    });
+    await new Promise((r) => setTimeout(r, 150)); // 정지가 풀린다
+
+    expect(await bucket.acquire(5)).toMatchObject({
+      granted: 1,
+      isProbe: true,
+      isBreakerOpen: true,
+    });
+    // 시험 발송이 나가 있는 동안에는 아무도 받지 못한다. 기다릴 시간은 시험 발송의 기한까지다.
+    const waiting = await bucket.acquire(5);
+
+    expect(waiting).toMatchObject({ granted: 0, isProbe: false });
+    expect(waiting.waitMs).toBeGreaterThan(20_000);
+
+    // 시험 발송 토큰을 쓰지 않고 돌려주면 바로 다시 시험할 수 있다.
+    await bucket.releaseProbe();
+    expect((await bucket.acquire(5)).isProbe).toBe(true);
+
+    await bucket.closeBreaker();
+    expect(await bucket.acquire(5)).toMatchObject({
+      isProbe: false,
+      isBreakerOpen: false,
+    });
+    expect((await bucket.acquire(5)).granted).toBeGreaterThan(1);
+  });
+
+  it('시험 발송이 실패해 다시 열면 정지 시간이 두 배가 된다 (ADR-0014)', async () => {
+    const bucket = new TokenBucket(database.db, 50, 10, 30_000);
+    const options = {
+      pauseMinMs: 100,
+      pauseMaxMs: 1000,
+      streakWindowMs: 60_000,
+    };
+
+    await bucket.tripBreaker(options);
+    await new Promise((r) => setTimeout(r, 150));
+    // 정지가 풀린 뒤 시험 발송이 실패했다
+    expect(await bucket.tripBreaker(options)).toEqual({
+      tripped: true,
+      pauseMs: 200,
+      streak: 1,
+    });
+    expect((await bucket.acquire(5)).granted).toBe(0);
+  });
+
   it('서킷 브레이커는 이미 정지 중이면 발동하지 않고, 연달아 발동하면 정지 시간이 두 배가 된다 (ADR-0014)', async () => {
-    const bucket = new TokenBucket(database.db, 50, 10);
+    const bucket = new TokenBucket(database.db, 50, 10, 30_000);
     const options = {
       pauseMinMs: 100,
       pauseMaxMs: 1000,

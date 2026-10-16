@@ -381,9 +381,11 @@ describe('워커 장애 (ADR-0004, 0007)', () => {
     const dispatcher = new Dispatcher({
       config,
       deliveries: new DeliveryRepository(db, 4747),
-      bucket: new TokenBucket(db, 1000, 50),
+      bucket: new TokenBucket(db, 1000, 50, 30_000),
       client,
       breaker: {
+        observe: () => undefined,
+        isOpen: () => false,
         record: async (result: SendResult) => {
           recorded.push(result);
         },

@@ -70,6 +70,13 @@ export class WorkerMetrics {
     registers: [this.registry],
   });
 
+  readonly breakerProbes = new Counter({
+    name: 'alarm_breaker_probes_total',
+    help: '브레이커가 열린 뒤의 시험 발송 결과. recovered면 닫혔고, still_failing이면 다시 열렸다',
+    labelNames: ['result'] as const,
+    registers: [this.registry],
+  });
+
   readonly rateLimitPauses = new Counter({
     name: 'alarm_rate_limit_pauses_total',
     help: '429로 전체를 멈춘 횟수',

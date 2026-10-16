@@ -1,0 +1,2 @@
+ALTER TABLE "rate_limiter" ADD COLUMN "breaker_open" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "rate_limiter" ADD COLUMN "probe_until" timestamp with time zone DEFAULT '-infinity' NOT NULL;

@@ -21,18 +21,26 @@ export type SendDecision =
   | { kind: 'failed'; code: string; message: string }
   | { kind: 'retry'; delayMs: number; code: string; message: string }
   | { kind: 'requeue_uncounted'; code: string; message: string }
-  | { kind: 'unconfirmed'; code: string; message: string };
+  | { kind: 'unconfirmed'; code: string; message: string; uncounted?: true };
 
 export interface RetryOptions extends BackoffOptions {
   maxAttempts: number;
 }
 
+/**
+ * isOutage: 서킷 브레이커가 장애로 판단한 상태(열림)다. 이 동안의 5xx·연결 오류·응답 없음은 그 건이 아니라 외부 장애 탓이므로
+ * 시도 횟수에 세지 않는다. 그래야 장애가 길어져도 재시도를 다 써서 누락되는 건이 없다 (ADR-0014).
+ */
 export function decideAfterSend(
   result: SendResult,
   attempts: number,
   options: RetryOptions,
   random: () => number = Math.random,
+  isOutage = false,
 ): SendDecision {
+  const isOutageFailure = isOutage && isBreakerFailure(result);
+  if (isOutageFailure) return outageDecision(result);
+
   switch (result.kind) {
     case 'accepted':
       return { kind: 'sent', messageId: result.messageId };
@@ -80,8 +88,32 @@ export function decideAfterSend(
   }
 }
 
+/** 장애 동안의 실패. 보냈는지 모르는 건은 조회로 확인해야 하므로 결과 미확정으로 두되 횟수만 되돌린다. */
+function outageDecision(result: BreakerFailure): SendDecision {
+  const isUnknown = result.kind === 'unknown';
+  if (isUnknown) {
+    return {
+      kind: 'unconfirmed',
+      code: result.code,
+      message: result.message,
+      uncounted: true,
+    };
+  }
+
+  return {
+    kind: 'requeue_uncounted',
+    code: result.code,
+    message: result.message,
+  };
+}
+
+type BreakerFailure = Extract<
+  SendResult,
+  { kind: 'server_error' | 'not_sent' | 'unknown' }
+>;
+
 /** 서킷 브레이커가 장애 신호로 세는 결과: 5xx, 연결 오류, 타임아웃 (ADR-0014). */
-export function isBreakerFailure(result: SendResult): boolean {
+export function isBreakerFailure(result: SendResult): result is BreakerFailure {
   return (
     result.kind === 'server_error' ||
     result.kind === 'not_sent' ||

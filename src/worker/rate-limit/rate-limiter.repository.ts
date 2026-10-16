@@ -7,6 +7,16 @@ import { rateLimiter } from '../../shared/db/schema';
 /** 토큰 버킷 행은 하나뿐이다 (ADR-0009). */
 const SINGLE_ROW = 1;
 
+export interface AcquireResult {
+  granted: number;
+  /** 0개를 받았을 때 다음 토큰이 생기거나, 정지나 시험 발송이 끝나기까지 남은 시간 */
+  waitMs: number;
+  /** 이 토큰이 브레이커가 열린 뒤의 시험 발송이다. 결과를 반드시 알려야 한다. */
+  isProbe: boolean;
+  /** 브레이커가 열려 있다(장애로 판단한 상태). 이 동안의 실패는 시도 횟수에 세지 않는다. */
+  isBreakerOpen: boolean;
+}
+
 export interface BreakerState {
   isPaused: boolean;
   /** 직전 브레이커 정지가 풀린 뒤 streakWindowMs 안인가 */
@@ -27,42 +37,72 @@ export class RateLimiterRepository {
     requested: number,
     ratePerSec: number,
     capacity: number,
-  ): Promise<{ granted: number; waitMs: number }> {
+    probeLeaseMs: number,
+  ): Promise<AcquireResult> {
     const result = await this.db.execute<{
       granted: number;
       wait_ms: number;
+      is_probe: boolean;
+      breaker_open: boolean;
     }>(sql`
       WITH cur AS (
-        SELECT r.tokens, r.refilled_at, r.paused_until, clock_timestamp() AS ts
+        SELECT r.tokens, r.refilled_at, r.paused_until, r.breaker_open, r.probe_until, clock_timestamp() AS ts
           FROM rate_limiter r
          WHERE r.id = ${SINGLE_ROW}
            FOR UPDATE
       ),
       calc AS (
-        SELECT ts, paused_until, GREATEST(refilled_at, ts) AS new_refilled_at,
+        SELECT ts, paused_until, breaker_open, probe_until, GREATEST(refilled_at, ts) AS new_refilled_at,
                LEAST(${capacity}::float8,
                      tokens + GREATEST(0, EXTRACT(EPOCH FROM ts - refilled_at)::float8) * ${ratePerSec}::float8) AS avail
           FROM cur
       ),
       g AS (
-        SELECT ts, avail, paused_until, new_refilled_at,
-               CASE WHEN ts < paused_until THEN 0 ELSE LEAST(${requested}::int, floor(avail)::int) END AS granted
+        SELECT ts, avail, paused_until, breaker_open, probe_until, new_refilled_at,
+               -- 정지 중이면 0. 브레이커가 열려 있으면 시험 발송 한 건만, 이미 나가 있으면 0 (ADR-0014).
+               CASE WHEN ts < paused_until THEN 0
+                    WHEN breaker_open AND ts < probe_until THEN 0
+                    WHEN breaker_open THEN LEAST(1, floor(avail)::int)
+                    ELSE LEAST(${requested}::int, floor(avail)::int) END AS granted
           FROM calc
+      ),
+      p AS (
+        SELECT g.*, (g.breaker_open AND g.granted > 0) AS is_probe FROM g
       )
       UPDATE rate_limiter r
-         SET tokens = g.avail - g.granted, refilled_at = g.new_refilled_at
-        FROM g
+         SET tokens = p.avail - p.granted, refilled_at = p.new_refilled_at,
+             probe_until = CASE WHEN p.is_probe THEN p.ts + make_interval(secs => ${probeLeaseMs / 1000}) ELSE r.probe_until END
+        FROM p
        WHERE r.id = ${SINGLE_ROW}
-      RETURNING g.granted,
-                CASE WHEN g.ts < g.paused_until THEN EXTRACT(EPOCH FROM g.paused_until - g.ts)::float8 * 1000
-                     WHEN g.granted = 0 THEN GREATEST(0, 1 - g.avail) / ${ratePerSec}::float8 * 1000
+      RETURNING p.granted, p.is_probe, p.breaker_open,
+                CASE WHEN p.ts < p.paused_until THEN EXTRACT(EPOCH FROM p.paused_until - p.ts)::float8 * 1000
+                     WHEN p.breaker_open AND p.ts < p.probe_until THEN EXTRACT(EPOCH FROM p.probe_until - p.ts)::float8 * 1000
+                     WHEN p.granted = 0 THEN GREATEST(0, 1 - p.avail) / ${ratePerSec}::float8 * 1000
                      ELSE 0 END AS wait_ms`);
     const row = result.rows[0];
 
     return {
       granted: Number(row?.granted ?? 0),
       waitMs: Math.ceil(Number(row?.wait_ms ?? 0)),
+      isProbe: row?.is_probe === true,
+      isBreakerOpen: row?.breaker_open === true,
     };
+  }
+
+  /** 시험 발송이 성공했다. 브레이커를 닫아 평소처럼 토큰을 낸다 (ADR-0014). */
+  async closeBreaker(): Promise<void> {
+    await this.db
+      .update(rateLimiter)
+      .set({ breakerOpen: false, probeUntil: sql`'-infinity'` })
+      .where(eq(rateLimiter.id, SINGLE_ROW));
+  }
+
+  /** 받은 시험 발송 토큰을 쓰지 않았다(보낼 건이 없었음 등). 다음 요청이 바로 다시 시험할 수 있게 한다. */
+  async releaseProbe(): Promise<void> {
+    await this.db
+      .update(rateLimiter)
+      .set({ probeUntil: sql`'-infinity'` })
+      .where(eq(rateLimiter.id, SINGLE_ROW));
   }
 
   /** 정지 해제 시각을 지금 + ms 이후로 미룬다. 이미 더 늦게 잡혀 있으면 그대로 둔다. */
@@ -108,6 +148,8 @@ export class RateLimiterRepository {
         breakerStreak: streak,
         pausedUntil: dbNowPlus(pauseMs),
         breakerLastUntil: dbNowPlus(pauseMs),
+        breakerOpen: true,
+        probeUntil: sql`'-infinity'`,
       })
       .where(eq(rateLimiter.id, SINGLE_ROW));
   }

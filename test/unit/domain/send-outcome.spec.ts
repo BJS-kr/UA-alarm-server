@@ -81,6 +81,63 @@ describe('발송 결과 → Delivery 처리 (ADR-0014, 0032)', () => {
     expect(isBreakerFailure({ kind: 'withheld' })).toBe(false);
   });
 
+  it('브레이커가 열린 동안의 실패는 시도 횟수에 세지 않고, 시도를 다 썼어도 포기하지 않는다', () => {
+    const down = {
+      kind: 'server_error' as const,
+      status: 503,
+      code: 'SERVICE_UNAVAILABLE',
+      message: 'down',
+    };
+
+    expect(decideAfterSend(down, 8, options, noJitter, true)).toEqual({
+      kind: 'requeue_uncounted',
+      code: 'SERVICE_UNAVAILABLE',
+      message: 'down',
+    });
+    expect(
+      decideAfterSend(
+        { kind: 'not_sent', code: 'ECONNREFUSED', message: 'x' },
+        8,
+        options,
+        noJitter,
+        true,
+      ).kind,
+    ).toBe('requeue_uncounted');
+    // 보냈는지 모르는 건은 조회로 확인해야 하므로 결과 미확정으로 두고 횟수만 되돌린다.
+    expect(
+      decideAfterSend(
+        { kind: 'unknown', code: 'CLIENT_TIMEOUT', message: 'x' },
+        8,
+        options,
+        noJitter,
+        true,
+      ),
+    ).toEqual({
+      kind: 'unconfirmed',
+      code: 'CLIENT_TIMEOUT',
+      message: 'x',
+      uncounted: true,
+    });
+    // 장애와 관계없는 결과는 평소대로
+    expect(
+      decideAfterSend(
+        {
+          kind: 'rejected',
+          status: 400,
+          code: 'RECIPIENT_BLOCKED',
+          message: 'x',
+        },
+        1,
+        options,
+        noJitter,
+        true,
+      ).kind,
+    ).toBe('failed');
+    expect(decideAfterSend(down, 8, options, noJitter, false).kind).toBe(
+      'failed',
+    );
+  });
+
   it('요청이 나가지 못한 연결 오류도 재시도한다', () => {
     expect(
       decideAfterSend(

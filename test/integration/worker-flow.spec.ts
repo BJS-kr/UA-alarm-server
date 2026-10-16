@@ -311,6 +311,51 @@ describe('워커 전체 흐름 (ADR-0002, 0006, 0009, 0011, 0014)', () => {
     }
   });
 
+  it('외부 장애가 브레이커 정지보다 훨씬 길게 이어져도 재시도를 다 써서 실패하는 건이 없고, 재개할 때는 시험 발송 한 건씩만 나간다 (ADR-0014)', async () => {
+    fake.users = userIds(100);
+    // 정지(0.1~0.4초)가 4초 장애 동안 여러 번 풀린다. 풀릴 때마다의 실패를 시도 횟수에 세면 앞쪽 건이 재시도 8번을 다 쓴다.
+    const outageUntil = Date.now() + 4000;
+
+    fake.behavior = () =>
+      Date.now() < outageUntil
+        ? { type: 'error', status: 503 }
+        : { type: 'accept' };
+    const alarm = await insertAlarm(database.db, {
+      type: 'BULK',
+      expansionDone: false,
+    });
+
+    await start({
+      RATE_LIMIT_PER_SEC: '200',
+      RATE_BUCKET_CAPACITY: '10',
+      BREAKER_PAUSE_MIN_MS: '100',
+      BREAKER_PAUSE_MAX_MS: '400',
+    });
+
+    await waitFor(
+      async () => (await alarmStatus(database.db, alarm.id)) === 'COMPLETED',
+      20_000,
+    );
+    const statuses = await deliveryStatuses(database.db, alarm.id);
+
+    expect(Object.values(statuses).filter((s) => s !== 'SENT')).toEqual([]);
+
+    for (const user of fake.users) {
+      expect([user, fake.recordsFor(clientRefOf(alarm.id, user))]).toEqual([
+        user,
+        1,
+      ]);
+    }
+
+    // 장애 동안 나간 요청은 처음 발동하기 전의 수십 건과, 정지가 풀릴 때마다 시험 발송 한 건씩이다.
+    // 시험 발송 없이 풀자마자 다 내보내면 풀릴 때마다 판단 창(20건)을 다시 채울 만큼 나간다.
+    const sentDuringOutage = fake.received.filter(
+      (r) => r.at < outageUntil,
+    ).length;
+
+    expect(sentDuringOutage).toBeLessThan(80);
+  });
+
   it('정상 종료는 보낸 건의 결과를 기록하고 보내지 않은 건을 반납한다 (ADR-0007)', async () => {
     fake.users = userIds(120);
     fake.behavior = () => ({ type: 'accept', delayMs: 200 });

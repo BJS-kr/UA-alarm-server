@@ -151,6 +151,10 @@ export class DeliveryRepository {
               lastErrorMessage: decision.message,
               reconcileAfter: dbNowPlus(reconcileDelayMs),
               lookupFailures: 0,
+              // 장애 동안의 응답 없음은 시도 횟수에 세지 않는다 (ADR-0014).
+              ...(decision.uncounted
+                ? { attempts: sql`${deliveries.attempts} - 1` }
+                : {}),
             };
         }
       },

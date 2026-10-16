@@ -107,6 +107,28 @@ describe('완료 판정: 마지막 기록이 같은 트랜잭션에서 판정한
     expect(row.rows[0]).toEqual({ status: 'PENDING', attempts: 0 });
   });
 
+  it('장애 동안의 응답 없음은 결과 미확정으로 두되 시도 횟수를 되돌린다 (ADR-0014)', async () => {
+    await insertAlarm(database.db, { type: 'URGENT', recipients: ['u_1'] });
+    const store = new DeliveryRepository(database.db, 1);
+    const [delivery] = await store.claim(1, 30_000);
+
+    await store.recordSend(
+      delivery,
+      {
+        kind: 'unconfirmed',
+        code: 'CLIENT_TIMEOUT',
+        message: 'x',
+        uncounted: true,
+      },
+      100,
+    );
+    const row = await database.db.execute<{ status: string; attempts: number }>(
+      sql`SELECT status, attempts FROM deliveries WHERE id = ${delivery.id}`,
+    );
+
+    expect(row.rows[0]).toEqual({ status: 'UNCONFIRMED', attempts: 0 });
+  });
+
   it('조회가 연달아 실패하면 간격을 늘리고, 다시 결과 미확정이 되면 처음부터 센다 (ADR-0014)', async () => {
     await insertAlarm(database.db, { type: 'URGENT', recipients: ['u_1'] });
     const store = new DeliveryRepository(database.db, 1);

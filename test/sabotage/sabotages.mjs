@@ -15,6 +15,8 @@ const FLOW_TEST = 'test/integration/worker-flow.spec.ts';
 const API_TEST = 'test/integration/api.spec.ts';
 const LOGGING_TEST = 'test/unit/shared/config-and-logging.spec.ts';
 const VALIDATION = 'src/api/http/validation.ts';
+const BREAKER = 'src/worker/breaker/send-breaker.ts';
+const BREAKER_TEST = 'test/unit/worker/send-breaker.spec.ts';
 
 export const SABOTAGES = [
   {
@@ -114,8 +116,8 @@ export const SABOTAGES = [
     adr: '0009, 0014',
     what: '정지(429·서킷 브레이커) 중에도 토큰을 준다',
     file: RATE_LIMITER,
-    find: 'CASE WHEN ts < paused_until THEN 0 ELSE LEAST(${requested}::int, floor(avail)::int) END AS granted',
-    replace: 'LEAST(${requested}::int, floor(avail)::int) AS granted',
+    find: '               CASE WHEN ts < paused_until THEN 0\n',
+    replace: '               CASE WHEN false THEN 0\n',
     test: CLAIM_TEST,
     name: '정지 중에는 토큰을 주지 않고',
   },
@@ -386,5 +388,76 @@ export const SABOTAGES = [
       '            lt(alarms.expansionLeaseUntil, dbNowPlus(-3_600_000)),\n',
     test: FLOW_TEST,
     name: '펼치기는 저장된 커서부터 이어 가고',
+  },
+  {
+    id: 'S45',
+    adr: '0014',
+    what: '브레이커가 열린 동안의 실패도 시도 횟수에 센다',
+    file: 'src/worker/dispatch/dispatcher.ts',
+    find: '      breaker.isOpen(),\n',
+    replace: '      false,\n',
+    test: FLOW_TEST,
+    name: '외부 장애가 브레이커 정지보다 훨씬 길게 이어져도',
+  },
+  {
+    id: 'S46',
+    adr: '0014',
+    what: '브레이커가 열린 뒤 정지가 풀리면 시험 발송 한 건이 아니라 요청한 만큼 토큰을 준다',
+    file: RATE_LIMITER,
+    find: '                    WHEN breaker_open THEN LEAST(1, floor(avail)::int)\n',
+    replace:
+      '                    WHEN breaker_open THEN LEAST(${requested}::int, floor(avail)::int)\n',
+    test: CLAIM_TEST,
+    name: '브레이커가 열린 뒤 정지가 풀리면 시험 발송 한 건만',
+  },
+  {
+    id: 'S47',
+    adr: '0014',
+    what: '시험 발송이 나가 있는 동안에도 다른 워커에게 시험 토큰을 준다',
+    file: RATE_LIMITER,
+    find: '                    WHEN breaker_open AND ts < probe_until THEN 0\n',
+    replace: '',
+    test: CLAIM_TEST,
+    name: '브레이커가 열린 뒤 정지가 풀리면 시험 발송 한 건만',
+  },
+  {
+    id: 'S48',
+    adr: '0014',
+    what: '브레이커가 열리기 전에 시작한 요청의 늦은 결과도 판단에 쓴다',
+    file: BREAKER,
+    find: '    if (isStartedBeforeOpening) return;\n',
+    replace: '',
+    test: BREAKER_TEST,
+    name: '열리기 전에 시작한 요청의 결과는',
+  },
+  {
+    id: 'S49',
+    adr: '0014',
+    what: '브레이커가 닫힐 때 판단 창을 비우지 않는다',
+    file: BREAKER,
+    find: '    this.isOpenNow = false;\n    this.window.reset();\n',
+    replace: '    this.isOpenNow = false;\n',
+    test: BREAKER_TEST,
+    name: '닫히면 판단 창을 비워',
+  },
+  {
+    id: 'S50',
+    adr: '0014',
+    what: '시험 발송이 성공해도 브레이커를 닫지 않는다',
+    file: BREAKER,
+    find: '    await this.bucket.closeBreaker();\n',
+    replace: '',
+    test: BREAKER_TEST,
+    name: '시험 발송이 성공하면 닫고',
+  },
+  {
+    id: 'S51',
+    adr: '0014',
+    what: '장애 동안의 응답 없음도 시도 횟수에 센다',
+    file: DELIVERIES,
+    find: '              ...(decision.uncounted\n',
+    replace: '              ...(false\n',
+    test: COMPLETION_TEST,
+    name: '장애 동안의 응답 없음은',
   },
 ];

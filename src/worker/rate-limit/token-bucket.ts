@@ -1,12 +1,11 @@
 import { Db } from '../../shared/db/database';
 import { breakerPauseMs } from '../../shared/domain/retry-policy';
-import { RateLimiterRepository } from './rate-limiter.repository';
+import {
+  AcquireResult,
+  RateLimiterRepository,
+} from './rate-limiter.repository';
 
-export interface Grant {
-  granted: number;
-  /** 0개를 받았을 때 다음 토큰이 생기거나 정지가 풀리기까지 남은 시간 */
-  waitMs: number;
-}
+export type Grant = AcquireResult;
 
 export interface BreakerOptions {
   pauseMinMs: number;
@@ -24,16 +23,33 @@ const MAX_STREAK = 10;
 export class TokenBucket {
   private readonly repository: RateLimiterRepository;
 
+  /** probeLeaseMs: 시험 발송을 맡은 워커가 결과를 알리지 못하고 죽었을 때, 다른 워커가 다시 시험하기까지의 시간 */
   constructor(
     db: Db,
     private readonly ratePerSec: number,
     private readonly capacity: number,
+    private readonly probeLeaseMs: number,
   ) {
     this.repository = new RateLimiterRepository(db);
   }
 
   acquire(requested: number): Promise<Grant> {
-    return this.repository.acquire(requested, this.ratePerSec, this.capacity);
+    return this.repository.acquire(
+      requested,
+      this.ratePerSec,
+      this.capacity,
+      this.probeLeaseMs,
+    );
+  }
+
+  /** 시험 발송이 성공했다. 브레이커를 닫는다 (ADR-0014). */
+  closeBreaker(): Promise<void> {
+    return this.repository.closeBreaker();
+  }
+
+  /** 시험 발송 토큰을 쓰지 않고 돌려준다. */
+  releaseProbe(): Promise<void> {
+    return this.repository.releaseProbe();
   }
 
   /** 429를 받으면 정지 해제 시각을 미뤄 모든 워커를 함께 멈춘다. */
@@ -42,7 +58,8 @@ export class TokenBucket {
   }
 
   /**
-   * 서킷 브레이커 발동 (ADR-0014). 이미 정지 중이면 발동하지 않는다.
+   * 서킷 브레이커 발동 (ADR-0014). 브레이커를 열고 정지한다. 이미 정지 중이면 발동하지 않는다.
+   * 시험 발송이 실패했을 때도 이 경로로 다시 연다.
    * 여러 워커가 같은 장애를 동시에 감지해도 정지 시간이 겹쳐 두 배씩 늘지 않게 하기 위해서다.
    * 직전 브레이커 정지가 풀린 뒤 streakWindowMs 안에 다시 발동하면 연달아 발동한 것으로 보고 정지를 늘린다.
    */

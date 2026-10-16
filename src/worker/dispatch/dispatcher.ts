@@ -77,6 +77,8 @@ export class Dispatcher {
     }
 
     const grant = await bucket.acquire(Math.min(free, config.CLAIM_BATCH_MAX));
+
+    this.deps.breaker.observe(grant.isBreakerOpen);
     const isOutOfTokens = grant.granted === 0;
     if (isOutOfTokens) {
       return {
@@ -96,10 +98,16 @@ export class Dispatcher {
     const leaseDeadline = claimStartedAt + config.DELIVERY_LEASE_MS;
     // 꺼낼 건이 없으면 받은 토큰은 버린다. 할 일이 없을 때만 생기므로 처리량 손해가 없다.
     const isNothingToSend = claimed.length === 0;
-    if (isNothingToSend) return 'idle';
+    if (isNothingToSend) {
+      // 시험 발송 토큰을 받았는데 보낼 건이 없다. 바로 돌려줘 다른 워커가 시험할 수 있게 한다.
+      if (grant.isProbe) await this.releaseProbe();
 
+      return 'idle';
+    }
+
+    // 시험 발송이면 토큰이 하나라 건도 하나다.
     for (const delivery of claimed) {
-      this.track(this.sendOne(delivery, leaseDeadline));
+      this.track(this.sendOne(delivery, leaseDeadline, grant.isProbe));
     }
 
     return 'busy';
@@ -127,6 +135,7 @@ export class Dispatcher {
   private sendOne(
     delivery: ClaimedDelivery,
     leaseDeadline: number,
+    isProbe: boolean,
   ): Promise<void> {
     return withLogContext(
       {
@@ -134,13 +143,14 @@ export class Dispatcher {
         deliveryId: String(delivery.id),
         attempt: delivery.attempts,
       },
-      () => this.sendInContext(delivery, leaseDeadline),
+      () => this.sendInContext(delivery, leaseDeadline, isProbe),
     );
   }
 
   private async sendInContext(
     delivery: ClaimedDelivery,
     leaseDeadline: number,
+    isProbe: boolean,
   ): Promise<void> {
     const { config, deliveries, client, metrics, logger, bucket, breaker } =
       this.deps;
@@ -151,7 +161,7 @@ export class Dispatcher {
     // 남은 기한은 소켓에 쓰기 바로 앞에서 확인한다. 꺼낸 직후보다 늦은 그 시점이 마지막 기회라 한 번이면 된다 (ADR-0004).
     const isShuttingDown = this.loop.isStopping;
     if (isShuttingDown) {
-      await this.persist(() => deliveries.releaseUnsent(delivery));
+      await this.giveBack(delivery, isProbe);
 
       return;
     }
@@ -179,7 +189,7 @@ export class Dispatcher {
     // 외부 장애가 아니므로 서킷 브레이커에 세지 않고, 시도 횟수도 되돌린다 (ADR-0004, 0014).
     const isWithheld = result.kind === 'withheld';
     if (isWithheld) {
-      await this.persist(() => deliveries.releaseUnsent(delivery));
+      await this.giveBack(delivery, isProbe);
 
       return;
     }
@@ -199,15 +209,18 @@ export class Dispatcher {
     }
 
     await breaker
-      .record(result)
+      .record(result, startedAt, isProbe)
       .catch((e: unknown) =>
         logger.error('Could not record the circuit breaker result', e as Error),
       );
 
+    // 브레이커가 열린 동안의 실패는 그 건이 아니라 외부 장애 탓이므로 시도 횟수에 세지 않는다 (ADR-0014).
     const decision = decideAfterSend(
       result,
       delivery.attempts,
       retryOptions(config),
+      Math.random,
+      breaker.isOpen(),
     );
 
     this.logDecision(delivery, result, decision);
@@ -328,6 +341,24 @@ export class Dispatcher {
 
         return;
     }
+  }
+
+  /** 보내지 않은 건을 반납한다. 시험 발송 토큰이었으면 그것도 돌려준다. */
+  private async giveBack(
+    delivery: ClaimedDelivery,
+    isProbe: boolean,
+  ): Promise<void> {
+    if (isProbe) await this.releaseProbe();
+    await this.persist(() => this.deps.deliveries.releaseUnsent(delivery));
+  }
+
+  /** 돌려주지 못해도 시험 발송의 기한이 지나면 다른 워커가 다시 시험하므로, 실패는 기록만 한다. */
+  private releaseProbe(): Promise<void> {
+    return this.deps.bucket
+      .releaseProbe()
+      .catch((e: unknown) =>
+        this.deps.logger.error('Could not release the probe token', e as Error),
+      );
   }
 
   private persist<T>(fn: () => Promise<T>): Promise<T> {

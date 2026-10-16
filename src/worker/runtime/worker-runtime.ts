@@ -77,10 +77,12 @@ export class WorkerRuntime {
       config.MAX_IN_FLIGHT,
     );
     const deliveries = new DeliveryRepository(this.db, workerId, loopDb);
+    // 시험 발송의 기한은 발송 기한과 같다. 그 안에 결과를 알리지 못하면 맡은 워커가 죽은 것으로 본다.
     const bucket = new TokenBucket(
       loopDb,
       config.RATE_LIMIT_PER_SEC,
       config.RATE_BUCKET_CAPACITY,
+      config.DELIVERY_LEASE_MS,
     );
     const breaker = new SendBreaker(
       config.BREAKER_WINDOW,
@@ -93,6 +95,7 @@ export class WorkerRuntime {
       },
       logger,
       () => this.metrics.breakerTrips.inc(),
+      (result) => this.metrics.breakerProbes.inc({ result }),
     );
 
     this.dispatcher = new Dispatcher({

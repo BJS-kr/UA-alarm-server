@@ -10,6 +10,11 @@ export class BreakerWindow {
     private readonly failureRatio: number,
   ) {}
 
+  /** 브레이커가 닫혔다. 장애 전의 결과로 다시 판단하지 않게 비운다. */
+  reset(): void {
+    this.results.length = 0;
+  }
+
   /** 결과를 기록하고, 이번 기록으로 장애 판단 기준을 넘었는지 돌려준다. 넘으면 창을 비운다. */
   record(failed: boolean): boolean {
     this.results.push(failed);

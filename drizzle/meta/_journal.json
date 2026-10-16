@@ -29,6 +29,13 @@
       "when": 1792134110267,
       "tag": "0003_leases",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792135119746,
+      "tag": "0004_breaker_probe",
+      "breakpoints": true
     }
   ]
 }
