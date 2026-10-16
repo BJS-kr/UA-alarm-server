@@ -20,10 +20,9 @@ src/
 
   worker/                 worker 프로세스 전용
     runtime/              부품 조립과 켜고 끄는 순서, 공통 작업 루프(PollingLoop) (ADR-0039)
-    lifecycle/            워커 ID, 잠금 연결, 발송 직전 확인, 무효 선언·넘겨받기 루프 (ADR-0004, 0007)
-      workers.repository  SQL: 살아 있는 워커 명단(pg_locks), 무효 선언(pg_stat_activity)
-    dispatch/             작업 루프: 토큰 → 꺼내기 → 발송 → 결과 기록 (ADR-0011, 0012, 0013)
-      delivery.repository SQL: 꺼내기, 결과 기록(펜싱), 넘겨받기, 결과 확인 대상
+    lifecycle/            워커 ID, 기한이 지난 건의 넘겨받기 루프 (ADR-0004, 0007)
+    dispatch/             작업 루프: 토큰 → 꺼내기 → 발송(쓰기 직전 기한 확인) → 결과 기록 (ADR-0004, 0011, 0012, 0013)
+      delivery.repository SQL: 꺼내기(기한 적기), 결과 기록(펜싱), 넘겨받기, 결과 확인 대상
     reconcile/            결과 확인 루프 (ADR-0002)
     expansion/            수신자 펼치기 루프와 그 저장소 (ADR-0006)
     cancellation/         취소 정리 루프와 그 저장소 (ADR-0017)

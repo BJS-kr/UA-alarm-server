@@ -11,7 +11,7 @@ BullMQ와 Redis가 주는 기능을 검토한 뒤 의도적으로 뺐다(ADR-000
 | 우선순위 | `priority` 옵션 | 꺼내는 쿼리의 `ORDER BY priority` |
 | 재시도와 백오프 | `attempts`, `backoff` | Delivery의 다음 시도 시각 컬럼 |
 | 여러 워커 분배 | 내장 | `FOR UPDATE SKIP LOCKED` |
-| 크래시 복구 | 시간 기반 잠금 갱신(stalled job 재실행) | DB 연결 생존 기반 점유(ADR-0004) |
+| 크래시 복구 | 시간 기반 잠금 갱신(stalled job을 그대로 재실행) | 건마다 적은 기한(리스). 넘겨받은 건은 조회한 뒤에만 다시 보내고, 늦은 쓰기는 펜싱으로 막는다(ADR-0004) |
 | 전역 처리량 제한 | 큐 단위 limiter | PG 기반 카운터 (처리량 제한 결정에서 정함) |
 
 ## 외부 저장소를 두지 않은 이유

@@ -12,7 +12,7 @@ export const unhandledErrors = new Counter({
 /**
  * 처리되지 않은 Promise 거절과 예외를 프로세스 단위로 받는다 (ADR-0039).
  * 로그와 메트릭으로 남기고 프로세스는 계속 돈다. 계속 돌 수 없을 만큼 망가졌다면 생존 확인(ADR-0026)이 잡아 재시작한다.
- * 일부러 끝내야 하는 경우(워커가 잠금을 잃음, ADR-0004)는 이 경로가 아니라 명시적인 종료 함수를 거친다.
+ * 일부러 끝내야 하는 경우(워커가 결과를 기록할 수 없음, ADR-0007)는 이 경로가 아니라 명시적인 종료 함수를 거친다.
  */
 export function installProcessGuardrail(logger: LoggerService): void {
   process.on('unhandledRejection', (reason) => {

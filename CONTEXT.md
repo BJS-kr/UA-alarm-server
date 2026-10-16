@@ -22,12 +22,14 @@ _Avoid_: Priority alarm, Transactional
 
 **SENDING (발송 중)**: 발송을 시작해 Delivery가 처리되고 있는 상태.
 
-**CANCELING (취소 중)**: 취소를 요청받아 새 발송은 멈췄고, 이미 나간 요청의 결과를 정리하는 상태.
+**CANCELING (취소 중)**: 취소를 요청받았거나 Expansion이 다시 해도 안 되는 오류로 실패해, 새 발송은 멈췄고 이미 나간 요청의 결과를 정리하는 상태. 어느 쪽인지는 Cancel reason으로 구별한다.
 
 **CANCELED (취소됨)**: 취소가 끝나 건수가 더 바뀌지 않는 상태.
 
 **COMPLETED (완료)**: 모든 Delivery가 성공 또는 실패로 끝난 상태. 실패가 섞여 있어도 완료다.
 _Avoid_: DONE, FINISHED, PARTIALLY_FAILED
+
+**Cancel reason (취소 이유)**: Alarm이 취소된 이유. `REQUESTED`(취소 요청)와 `EXPANSION_FAILED`(수신자 펼치기가 다시 해도 안 되는 오류로 실패해 시스템이 멈춤)가 있다.
 
 ### 수신과 발송
 
@@ -65,6 +67,24 @@ _Avoid_: SENDING (Alarm 상태 이름과 겹침)
 **FAILED (실패)**: 영구 실패이거나 재시도를 모두 쓴 상태.
 
 **CANCELED (취소)**: Alarm 취소로 보내지 않은 상태.
+
+### 점유와 장애
+
+**Owner (담당)**:
+Delivery나 알림 단위 작업(Expansion, 취소 정리)을 지금 쥐고 있는 워커. 프로세스마다 새로 뽑는 워커 ID로 적는다.
+
+**Lease (기한)**:
+담당이 그 시각까지 결과를 기록하지 않으면 다른 워커가 가져가도 된다는 시각. Delivery는 꺼낼 때 한 번 적고, Expansion은 사용자 조회마다 연장한다. DB 시계로 판단한다.
+_Avoid_: 잠금, 하트비트
+
+**Takeover (넘겨받기)**:
+기한이 지난 IN_FLIGHT Delivery를 UNCONFIRMED로 바꾸고 담당을 비우는 일. 넘겨받은 건은 Reconciliation을 거친 뒤에만 다시 보낸다.
+
+**Fencing (펜싱)**:
+담당이 있는 쓰기를 담당(과 시도 번호)이 그대로일 때만 반영하는 조건. 넘겨받힌 뒤 늦게 깨어난 워커의 쓰기를 0건 갱신으로 막는다.
+
+**Probe (시험 발송)**:
+서킷 브레이커가 열린 뒤 정지가 풀렸을 때, 모든 워커를 합쳐 한 건만 내보내 외부 서비스의 복구를 확인하는 발송. 성공하면 브레이커를 닫는다.
 
 **Message (외부 메시지)**:
 외부 발송 서비스가 발송 요청 한 건을 접수해 남긴 기록. 외부 서비스의 개념이며 `messageId`로 식별한다.

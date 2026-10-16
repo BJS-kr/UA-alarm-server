@@ -23,7 +23,7 @@ api, worker, migrate는 같은 이미지에서 실행 명령만 다르다(`node 
 
 실패 신호도 깔끔해진다. 부트스트랩 방식은 마이그레이션이 실패하면 api·worker가 모두 죽고 재시작을 반복하며 같은 에러를 여러 곳에 쏟는다. 별도 서비스는 migrate 하나만 실패로 끝나고, api·worker는 `depends_on: condition: service_completed_successfully`에 걸려 시작하지 않는다. 스키마가 맞지 않는 상태로 발송이 시작되지 않는다.
 
-api와 worker는 모두 같은 앱 계정을 쓴다. 다른 워커의 세션을 끊는 무효 선언(`pg_terminate_backend`, ADR-0004)은 같은 역할의 세션에만 권한이 있기 때문이다.
+api와 worker는 모두 같은 앱 계정을 쓴다. 둘 다 데이터 읽기·쓰기만 하므로 권한이 같다. 나눠야 할 이유가 생기면(예: api는 deliveries를 읽기만) 계정을 나눈다.
 
 ## 검토한 후보
 

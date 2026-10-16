@@ -15,8 +15,12 @@
 | `expansion_cursor` | `text` NULL | 다음에 읽을 사용자 API 커서(ADR-0006) |
 | `expansion_done` | `boolean` NOT NULL, 기본 `false` | URGENT는 발송 시작 시 `true` |
 | `expansion_owner` | `bigint` NULL | 펼치기를 쥔 워커 ID(ADR-0004, 0006) |
+| `expansion_lease_until` | `timestamptz` NULL | 펼치기 담당의 기한. 사용자 조회마다 연장하고, 지나면 다른 워커가 맡는다(ADR-0004) |
 | `cleanup_done` | `boolean` NOT NULL, 기본 `false` | 취소 정리 완료 여부(ADR-0017) |
 | `cleanup_owner` | `bigint` NULL | 취소 정리를 쥔 워커 ID |
+| `cleanup_lease_until` | `timestamptz` NULL | 취소 정리 담당의 기한(ADR-0004) |
+| `cancel_reason` | `text` NULL, `REQUESTED` · `EXPANSION_FAILED` | 취소 이유. 사람이 취소했는지, 수신자 조회가 다시 해도 안 되는 오류로 실패해 시스템이 멈췄는지(ADR-0006, 0017) |
+| `last_error_code`, `last_error_message` | `text` NULL | 시스템이 멈춘 경우의 마지막 오류(ADR-0006) |
 | `created_at` | `timestamptz` NOT NULL, 기본 `now()` | ADR-0029 |
 | `started_at` | `timestamptz` NULL | ADR-0029 |
 | `finished_at` | `timestamptz` NULL | ADR-0029 |
@@ -52,6 +56,7 @@
 | `reconcile_after` | `timestamptz` NULL | UNCONFIRMED일 때 조회할 수 있는 시각(ADR-0002) |
 | `owner` | `bigint` NULL | 쥐고 있는 워커 ID(ADR-0004) |
 | `claimed_at` | `timestamptz` NULL | 마지막으로 꺼낸 시각. "가장 오래된 진행 중 건" 메트릭(ADR-0027) |
+| `lease_until` | `timestamptz` NULL | IN_FLIGHT일 때의 기한. claim 쿼리가 지금 + 30초로 적고, 지나도록 결과가 기록되지 않으면 다른 워커가 넘겨받는다(ADR-0004) |
 | `message_id` | `text` NULL | 외부 Message ID |
 | `sent_at` | `timestamptz` NULL | 발송 완료 시각 |
 | `last_error_code` | `text` NULL | 마지막 에러 코드(ADR-0014) |
@@ -67,7 +72,7 @@
 | --- | --- | --- |
 | `(priority, start_seq, id)` | `WHERE status = 'PENDING'` | 꺼내기(ADR-0011, 0012) |
 | `(reconcile_after)` | `WHERE status = 'UNCONFIRMED'` | 결과 확인 대상 찾기(ADR-0002) |
-| `(owner)` | `WHERE status IN ('IN_FLIGHT', 'UNCONFIRMED')` | 넘겨받기 대상 찾기(ADR-0004) |
+| `(lease_until)` | `WHERE status = 'IN_FLIGHT'` | 넘겨받기 대상(기한이 지난 건) 찾기(ADR-0004) |
 | `(alarm_id)` | `WHERE status IN ('PENDING', 'IN_FLIGHT', 'UNCONFIRMED')` | 완료 판정 `NOT EXISTS`(ADR-0018) |
 | `(alarm_id, status, recipient_id)` | 없음 | 상태별 건수, 상태로 거른 deliveries 목록 커서(ADR-0018, 0024) |
 
@@ -82,6 +87,8 @@
 | `refilled_at` | `timestamptz` NOT NULL | ADR-0009 |
 | `paused_until` | `timestamptz` NOT NULL, 기본 `-infinity` | 429 정지와 서킷 브레이커 정지(ADR-0009, 0014) |
 | `breaker_streak` | `smallint` NOT NULL, 기본 0 | 서킷 브레이커가 연달아 발동한 횟수. 정지 시간 = min(5초 × 2^streak, 60초) |
+| `breaker_open` | `boolean` NOT NULL, 기본 `false` | 브레이커가 열려 있다. 정지가 풀려도 시험 발송 한 건만 나가고, 이 동안의 실패는 시도 횟수에 세지 않는다(ADR-0014) |
+| `probe_until` | `timestamptz` NOT NULL, 기본 `-infinity` | 시험 발송이 나가 있는 동안의 기한. 지나면 다른 워커가 다시 시험한다(ADR-0014) |
 | `breaker_last_until` | `timestamptz` NOT NULL, 기본 `-infinity` | 직전 서킷 브레이커 정지가 풀리는 시각. 429 정지와 섞이지 않게 따로 둔다 |
 
 - 서킷 브레이커의 "연달아"는 직전 브레이커 정지(`breaker_last_until`)가 풀린 뒤 60초 안에 다시 발동한 경우로 본다. 60초가 지나 발동하면 `breaker_streak`를 0부터 다시 센다.
@@ -90,7 +97,7 @@
 
 ## 워커 명단
 
-테이블이 없다. `pg_locks`의 advisory lock과 `pg_stat_activity`가 명단이다(ADR-0004).
+두지 않는다. 넘겨받기는 건마다 적은 기한만 보므로 어떤 워커가 살아 있는지 알 필요가 없다(ADR-0004).
 
 ## DB 계정 (docker/postgres/init.sh)
 

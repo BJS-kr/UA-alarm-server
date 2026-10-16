@@ -7,7 +7,7 @@ import { createDb, Db } from '../../../src/shared/db/database';
 
 /**
  * 테스트 파일마다 실제 PostgreSQL에 새 DB를 만들고 마이그레이션을 적용한다 (ADR-0035).
- * advisory lock과 pg_stat_activity는 DB 단위로 걸러 쓰므로 테스트끼리 섞이지 않는다.
+ * 상태는 모두 그 DB 안에 있으므로 테스트끼리 섞이지 않는다.
  */
 export interface TestDatabase {
   url: string;
