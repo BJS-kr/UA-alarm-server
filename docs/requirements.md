@@ -12,7 +12,7 @@
 | R2 | 실제 운영 환경 배포를 가정한다 | 0025, 0026, 0027, 0028, 0030, 0031, 0033 | U `config-and-logging`, `hardening`(설정 검증·마스킹), U `management-server`(헬스·메트릭), I `api`(401·Problem Details) |
 | R3 | 제공된 mock 서버 이미지를 실행해 외부 발송 API로 쓴다 | 0025, [external-api](./external-api.md), [mock-observations](./mock-observations.md) | E `scripts/e2e.sh` |
 | R4 | 외부 발송의 초당 상한을 넘기지 않고, 넘겨서 429를 받으면 Retry-After를 따른다 | 0009, 0013, 0014 | I `claim-and-bucket`(토큰 버킷), I `worker-flow` "워커 3대가 처리량 제한을 함께 지켜", E |
-| R5 | mock의 일시 오류(500·503)를 다룬다 | 0014 | U `send-outcome`(500·503 재시도, 장애 동안 세지 않기), U `send-breaker`(시험 발송, 늦은 결과 무시), U `external-api.client` "그사이 도착한 응답은", I `claim-and-bucket` "시험 발송 한 건만", I `worker-flow` "장애를 섞어도", "외부 장애가 브레이커 정지보다 훨씬 길게" |
+| R5 | mock의 일시 오류(500·503)를 다룬다 | 0014 | U `send-outcome`(500·503 재시도, 장애 동안 세지 않기), U `send-breaker`(시험 발송, 늦은 결과 무시), U `external-api.client` "그사이 도착한 응답은", I `worker-flow` "알림 막바지에 늦게 도착하는 타임아웃만으로는", I `claim-and-bucket` "시험 발송 한 건만", I `worker-flow` "장애를 섞어도", "외부 장애가 브레이커 정지보다 훨씬 길게" |
 | R6 | 요청은 외부에 기록됐는데 응답이 아주 늦게 오거나 오지 않는 경우를 다룬다 | 0002, 0032 | U `external-api.client`(응답 없음 → 알 수 없음), U `send-outcome`(결과 확인, 조회 재시도 간격), I `worker-flow` "장애를 섞어도"(응답이 늦은 건은 다시 보내지 않음), I `completion-and-cancel` "조회가 연달아 실패하면" |
 | R7 | mock의 지연(대부분 빠르고 일부 느림)을 다룬다 | 0002, 0013 | U `external-api.client`(타임아웃·소켓 상한), E |
 | R8 | 항상 실패하는 수신자(400)를 다룬다 | 0014, 0032 | U `send-outcome`(400 영구 실패), I `worker-flow` "장애를 섞어도"(수신 거부는 FAILED, 외부 기록 0) |

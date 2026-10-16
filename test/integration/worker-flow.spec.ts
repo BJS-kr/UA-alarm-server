@@ -403,6 +403,30 @@ describe('워커 전체 흐름 (ADR-0002, 0006, 0009, 0011, 0014)', () => {
     }
   });
 
+  it('알림 막바지에 늦게 도착하는 타임아웃만으로는 서킷 브레이커가 열리지 않는다 (ADR-0014)', async () => {
+    fake.users = userIds(1000);
+    // 10건 중 1건은 접수만 하고 응답하지 않는다(mock의 30초 지연과 같다). 성공은 바로, 타임아웃은 응답 한도 뒤에 돌아오므로
+    // 발송이 끝나는 순간 그 전 응답 한도 동안 보낸 건의 타임아웃만 몰려 도착한다. 외부 서비스는 멀쩡하다.
+    fake.behavior = (recipientId, attempt) =>
+      Number(recipientId.slice(2)) % 10 === 0 && attempt === 1
+        ? { type: 'record_then_hang', hangMs: 3000 }
+        : { type: 'accept' };
+    const alarm = await insertAlarm(database.db, {
+      type: 'BULK',
+      expansionDone: false,
+    });
+
+    await start({ SEND_TIMEOUT_MS: '2000' });
+
+    await waitFor(
+      async () => (await alarmStatus(database.db, alarm.id)) === 'COMPLETED',
+      30_000,
+    );
+    const { values } = await workers[0].runtime.metrics.breakerTrips.get();
+
+    expect(values[0]?.value ?? 0).toBe(0);
+  });
+
   it('외부 장애가 브레이커 정지보다 훨씬 길게 이어져도 재시도를 다 써서 실패하는 건이 없고, 재개할 때는 시험 발송 한 건씩만 나간다 (ADR-0014)', async () => {
     fake.users = userIds(100);
     // 정지(0.1~0.4초)가 4초 장애 동안 여러 번 풀린다. 풀릴 때마다의 실패를 시도 횟수에 세면 앞쪽 건이 재시도 8번을 다 쓴다.

@@ -35,47 +35,70 @@ describe('서킷 브레이커 정지 시간 (ADR-0014)', () => {
 });
 
 describe('서킷 브레이커 판단 창 (ADR-0014)', () => {
-  it('창이 차기 전에는 발동하지 않는다', () => {
-    const window = new BreakerWindow(4, 0.5);
+  /** 결과를 시작한 순서대로 기록한다. 시작 시각은 1씩 늘린다. */
+  const inOrder = (window: BreakerWindow) => {
+    let startedAt = 0;
 
-    expect([true, true, true].map((f) => window.record(f))).toEqual([
-      false,
-      false,
-      false,
-    ]);
+    return (failed: boolean) => window.record(failed, (startedAt += 1));
+  };
+
+  it('창이 차기 전에는 발동하지 않는다', () => {
+    const record = inOrder(new BreakerWindow(4, 0.5));
+
+    expect([true, true, true].map(record)).toEqual([false, false, false]);
   });
 
   it('최근 N건 중 실패 비율이 기준 이상이면 발동하고 창을 비운다', () => {
+    const record = inOrder(new BreakerWindow(4, 0.5));
+
+    expect([false, false, true].map(record)).toEqual([false, false, false]);
+    expect(record(true)).toBe(true);
+    // 창이 비워졌으므로 다시 4건이 쌓여야 판단한다.
+    expect(record(true)).toBe(false);
+  });
+
+  it('기준 미만이면 발동하지 않고 오래된 결과는 밀려난다', () => {
+    const record = inOrder(new BreakerWindow(4, 0.5));
+
+    [true, false, false, false].forEach(record);
+    expect(record(false)).toBe(false);
+    expect(record(true)).toBe(false);
+    expect(record(true)).toBe(true);
+  });
+
+  it('평소 오류율 5% 수준으로는 발동하지 않는다', () => {
+    const record = inOrder(new BreakerWindow(20, 0.5));
+    let tripped = false;
+
+    for (let i = 0; i < 1000; i++) {
+      tripped = record(i % 20 === 0) || tripped;
+    }
+
+    expect(tripped).toBe(false);
+  });
+
+  it('창에 든 어느 건보다 먼저 시작한 결과는 늦게 도착해도 판단에 쓰지 않는다', () => {
     const window = new BreakerWindow(4, 0.5);
 
-    expect([false, false, true].map((f) => window.record(f))).toEqual([
+    // 시작 시각 10~13의 성공이 먼저 도착하고, 그 전에 시작한 요청의 타임아웃이 뒤늦게 몰려 온다.
+    [10, 11, 12, 13].forEach((t) => window.record(false, t));
+
+    expect([1, 2, 3, 4, 5].map((t) => window.record(true, t))).toEqual([
+      false,
+      false,
       false,
       false,
       false,
     ]);
-    expect(window.record(true)).toBe(true);
-    // 창이 비워졌으므로 다시 4건이 쌓여야 판단한다.
-    expect(window.record(true)).toBe(false);
   });
 
-  it('기준 미만이면 발동하지 않고 오래된 결과는 밀려난다', () => {
+  it('늦게 도착해도 창 안의 시각에 시작한 결과는 시작 순서 자리에 넣어 판단한다', () => {
     const window = new BreakerWindow(4, 0.5);
 
-    [true, false, false, false].forEach((f) => window.record(f));
-    expect(window.record(false)).toBe(false);
-    expect(window.record(true)).toBe(false);
-    expect(window.record(true)).toBe(true);
-  });
-
-  it('평소 오류율 5% 수준으로는 발동하지 않는다', () => {
-    const window = new BreakerWindow(20, 0.5);
-    let tripped = false;
-
-    for (let i = 0; i < 1000; i++) {
-      tripped = window.record(i % 20 === 0) || tripped;
-    }
-
-    expect(tripped).toBe(false);
+    [10, 12, 14, 16].forEach((t) => window.record(false, t));
+    expect(window.record(true, 15)).toBe(false);
+    // 창은 시작 시각 12, 14, 15, 16. 13에 시작한 실패가 들어오면 12가 밀려나 실패가 절반이 된다.
+    expect(window.record(true, 13)).toBe(true);
   });
 });
 

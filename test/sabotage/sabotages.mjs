@@ -541,4 +541,14 @@ export const SABOTAGES = [
     test: 'test/unit/shared/external-api.client.spec.ts',
     name: '그사이 도착한 응답은 타임아웃이 아니라 응답으로 읽는다',
   },
+  {
+    id: 'S60',
+    adr: '0014',
+    what: '브레이커 판단 창을 시작 순서가 아니라 도착 순서로 쌓는다(알림 막바지에 늦은 타임아웃만 몰려 장애로 보인다)',
+    file: 'src/shared/domain/breaker-window.ts',
+    find: 'const later = this.results.findIndex((r) => r.startedAt > startedAt);',
+    replace: 'const later = -1;',
+    test: FLOW_TEST,
+    name: '알림 막바지에 늦게 도착하는 타임아웃만으로는',
+  },
 ];
