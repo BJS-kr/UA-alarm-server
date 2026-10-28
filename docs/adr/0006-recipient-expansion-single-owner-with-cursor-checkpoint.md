@@ -23,6 +23,38 @@
 - **커서는 불투명(opaque) 문자열로 취급한다.** 응답 커서가 base64 인코딩된 순번 형태를 띠더라도 애플리케이션이 임의로 커서를 합성하여 다중 워커 병렬 조회를 시도하지 않는다. API 명세에 보장되지 않은 내부 구현에 의존하면 외부 서비스 변경 시 장애가 발생하기 때문이다.
 - **수신자 확장과 발송은 코드 모듈을 완전히 분리한다.** 두 모듈은 DB 테이블만 공유하며, 런타임에는 동일한 워커 프로세스 내에서 함께 구동된다.
 
+```mermaid
+sequenceDiagram
+    participant A as 워커 A
+    participant U as 외부 사용자 API
+    participant DB as DB
+    participant B as 워커 B
+
+    rect rgba(66, 135, 245, 0.12)
+    Note over A,B: 평소: A 혼자 1000명씩 페이지를 넘긴다
+    loop 페이지마다 (약 100번)
+        A->>DB: 리스 연장 (취소됐거나 넘어갔으면 여기서 멈춤)
+        A->>U: 다음 1000명 (cursor)
+        U-->>A: 1000명 + 다음 cursor
+        A->>DB: 한 번에 저장: Delivery 1000행 + 다음 cursor
+        Note over DB: 저장된 1000명은 바로 발송 대상
+    end
+    end
+
+    rect rgba(245, 158, 11, 0.15)
+    Note over A,B: A가 중간 페이지에서 죽는다
+    Note over A: 크래시
+    end
+
+    rect rgba(34, 197, 94, 0.12)
+    Note over A,B: 30초 뒤 B가 이어받는다
+    B->>DB: 작업을 넘겨받고 마지막으로 저장된 cursor를 읽음
+    B->>U: 그 cursor부터 이어서 조회
+    Note over DB: 같은 페이지를 다시 넣어도 (alarm_id, recipient_id) 유일 제약으로 중복 없음
+    Note over A,B: A가 죽은 게 아니라 멈췄다 깨어난 거라면, A의 저장은 owner와 cursor가 맞지 않아 거부된다
+    end
+```
+
 ### 사용자 조회 실패 처리
 
 | 실패 유형                                                    | 처리 방식                                                                                                                                                                                                       |

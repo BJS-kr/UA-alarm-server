@@ -11,6 +11,31 @@
 1. **API 서버**: 알림 상태를 `SENDING`에서 `CANCELING`으로 전이시키고 취소 사유(`REQUESTED`)를 기록한 뒤 즉시 응답한다(ADR-0016의 조건부 `UPDATE`, 수 ms 내 완료). 워커의 점유(claim) 쿼리는 `status = 'SENDING'`인 알림의 Delivery만 조회하므로, 이 트랜잭션이 커밋된 이후 시작되는 점유(claim) 쿼리는 해당 알림의 Delivery를 선택하지 않는다.
 2. **워커**: 해당 알림의 대기 건(재시도 대기 중인 건 포함)을 일괄 `CANCELED`로 변경한다. 워커는 작업 폴링 시 대기 건 정리가 완료되지 않은 `CANCELING` 알림도 점유(claim)하며, 수신자 확장(Expansion)과 동일한 리스(lease) 및 만료 시각(`lease_until`) 메커니즘(ADR-0004)으로 소유권을 관리한다. 대기 건 정리가 끝나면 완료 판정(ADR-0018)을 수행하여 처리 중이던 건이 없을 경우 즉시 `CANCELED`로 최종 전이한다.
 
+```mermaid
+sequenceDiagram
+    participant C as 클라이언트
+    participant API as API 서버
+    participant DB as DB
+    participant W as 워커
+
+    rect rgba(66, 135, 245, 0.12)
+    Note over C,W: 1단계: 상태만 바꾸고 바로 응답 (수 ms)
+    C->>API: 취소 요청
+    API->>DB: 알림 SENDING → CANCELING
+    API-->>C: 응답
+    Note over DB,W: 이제 새 점유는 이 알림의 건을 고르지 않는다
+    end
+
+    rect rgba(34, 197, 94, 0.12)
+    Note over C,W: 2단계: 워커가 남은 건을 정리 (리스로 담당)
+    W->>DB: 정리 작업을 맡음
+    W->>DB: 대기 건(최대 10만 건) → CANCELED
+    Note over W: 발송 중이던 건은 결과를 그대로 기록
+    Note over W: 보냈는지 모르는 건은 조회해서 SENT 또는 CANCELED
+    W->>DB: 마지막 건이 끝나면 알림 → CANCELED
+    end
+```
+
 ## 근거
 
 - **단일 트랜잭션 처리 시의 추가 발송 방지**: 두 단계를 단일 트랜잭션으로 묶으면 10만 건을 갱신하는 약 1초 동안 아직 잠기지 않은 행을 워커가 점유(claim)하여 최대 50건가량이 추가 발송될 수 있다. 1단계를 먼저 커밋하면 정리 작업 동안 신규 점유가 즉시 차단된다.
@@ -33,6 +58,28 @@
 ### 보장 범위 및 한계: 취소 커밋 직후 소수 건의 추가 발송 가능성
 
 취소가 커밋된 이후 시작된 점유(claim) 쿼리는 해당 알림의 Delivery를 점유하지 않는다. 단, 커밋 시점에 이미 점유 쿼리가 실행 중이었거나 발송 중이던 건은 취소 응답 직후 외부로 전송될 수 있다.
+
+```mermaid
+sequenceDiagram
+    participant C as 클라이언트
+    participant API as API 서버
+    participant DB as DB
+    participant W as 워커
+    participant X as 외부 발송 API
+
+    rect rgba(245, 158, 11, 0.15)
+    Note over API,W: 몇 ms가 겹치는 순간
+    W->>DB: 점유 시작 (이 순간의 알림 상태 SENDING을 읽음)
+    API->>DB: 취소 커밋 (CANCELING)
+    API-->>C: 취소 응답
+    DB-->>W: 1건 점유됨 (앞서 읽은 SENDING 기준)
+    end
+
+    W->>X: 1건 발송 (취소 응답 직후)
+    W->>DB: SENT 기록
+    Note over DB,W: 다음 점유부터는 CANCELING이 보여서 더 나가지 않는다
+    Note over DB,W: 이 건까지 끝난 뒤에 알림이 CANCELED가 되므로<br/>받은 사람 목록은 정확하다
+```
 
 - **발생 원인**: 워커의 한 폴링 주기(사이클)는 토큰 획득 → 점유(claim) 쿼리 → 점유한 건별 HTTP `POST` 순서로 진행된다. 점유 쿼리는 문장 시작 시점의 스냅숏으로 알림 상태를 읽으며 알림 행에 잠금을 걸지 않는다. 따라서 점유 쿼리가 실행되는 수 ms 사이에 취소 트랜잭션이 커밋되면 해당 쿼리는 알림을 `SENDING`으로 인식하여 Delivery를 `IN_FLIGHT`로 전환하고, 이어서 취소 응답 직후 외부 `POST`가 1회 전송될 수 있다. 다음 폴링 주기의 점유 쿼리부터는 `CANCELING` 상태가 반영된다.
 - **발생 규모 및 빈도**: 취소 커밋 순간 점유 쿼리를 실행 중이던 워커가 그 주기에서 선택한 건수만큼 발생한다. 평시에는 토큰이 1개씩 보충되므로 1건이며, 토큰이 누적된 직후(발송 시작 직후 또는 정지 해제 직후)에는 최대 10건이다. 점유 쿼리는 전체 워커 합산 초당 약 50회 실행되고 회당 수 ms가 소요되므로 발송 중 취소 10회당 약 1회 빈도로 발생한다(시험에서도 10회 중 1회, 응답 1ms 후 외부 발송 기록이 발생함).

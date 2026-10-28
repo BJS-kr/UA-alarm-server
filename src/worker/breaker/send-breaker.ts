@@ -49,8 +49,10 @@ export class SendBreaker {
   ): Promise<void> {
     const isFailure = isBreakerFailure(result);
     if (isProbe) return this.recordProbe(isFailure);
+
     const isStartedBeforeOpening = startedAt <= this.openedAt;
     if (isStartedBeforeOpening) return;
+
     const isOutage = this.window.record(isFailure, startedAt);
     if (isOutage) await this.trip('Send failures look like an outage');
   }

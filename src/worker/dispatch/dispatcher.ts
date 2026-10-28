@@ -78,6 +78,7 @@ export class Dispatcher {
       return 'busy';
     }
 
+    // 1. 토큰 획득
     const grant = await bucket.acquire(Math.min(free, config.CLAIM_BATCH_MAX));
 
     this.deps.breaker.observe(grant.isBreakerOpen);

@@ -172,6 +172,42 @@ Client ──HTTP──▶ api ──▶ ┌────────────
 3. **토큰 획득 및 작업 점유(Claim)**: 모든 워커는 `rate_limiter` 테이블에서 발송 토큰을 먼저 획득한 뒤, 획득한 토큰 수만큼 `FOR UPDATE SKIP LOCKED`로 `PENDING` 상태의 `Delivery`를 점유(`IN_FLIGHT`)하여 외부 API로 발송합니다.
 4. **결과 기록 및 완료 판정**: 각 `Delivery`가 최종 상태(`SENT`, `FAILED`, `CANCELED`)로 전환될 때 동일 트랜잭션 내에서 해당 `alarms` 행을 잠그고(`FOR UPDATE`), 미완료 건(`PENDING`, `IN_FLIGHT`, `UNCONFIRMED`)이 남아 있지 않으면 알림 상태를 `COMPLETED`(또는 `CANCELED`)로 전환합니다(ADR-0018).
 
+```mermaid
+sequenceDiagram
+    participant C as 클라이언트
+    participant API as api
+    participant DB as PostgreSQL
+    participant W as worker
+    participant U as 외부 사용자 API
+    participant X as 외부 발송 API
+
+    rect rgba(66, 135, 245, 0.12)
+    Note over C,X: 1. 발송 시작 (ADR-0016)
+    C->>API: POST /v1/alarms/{id}/send
+    API->>DB: 알림 CREATED → SENDING (동시에 와도 한 번만)
+    end
+
+    rect rgba(168, 85, 247, 0.12)
+    Note over C,X: 2. 수신자 확장: 대량 알림만, 워커 하나가 1000명씩 (ADR-0006)
+    W->>U: 사용자 1000명 조회
+    W->>DB: Delivery 1000행(PENDING) + 다음 cursor 저장
+    end
+
+    rect rgba(245, 158, 11, 0.15)
+    Note over C,X: 3. 토큰을 받고, 받은 만큼 점유해서 발송 (ADR-0009, ADR-0011, ADR-0004)
+    W->>DB: 토큰 받기 (모든 워커가 한 행을 공유)
+    W->>DB: 받은 개수만큼 점유, 긴급 먼저 (IN_FLIGHT, 리스 30초)
+    W->>X: 발송
+    X-->>W: 응답
+    end
+
+    rect rgba(34, 197, 94, 0.12)
+    Note over C,X: 4. 결과 기록과 완료 판정 (ADR-0014, ADR-0018)
+    W->>DB: SENT, FAILED, 재시도(PENDING), 보냈는지 모름(UNCONFIRMED) 중 하나로 기록
+    Note over DB,W: 끝난 건이면 알림 행을 잠그고, 남은 건이 없으면 알림 COMPLETED
+    end
+```
+
 ### 중복 및 누락 방지
 
 외부 발송 API는 멱등성을 보장하지 않으므로(동일 `clientRef` 재전송 시 중복 발송됨), 전송 성공 여부를 확신할 수 없는 요청을 즉시 재전송하지 않도록 설계했습니다.

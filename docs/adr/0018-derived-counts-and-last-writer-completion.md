@@ -32,6 +32,47 @@ WHERE id = $1 AND status = 'SENDING'
   AND NOT EXISTS (미종결 Delivery: PENDING, IN_FLIGHT, UNCONFIRMED)
 ```
 
+```mermaid
+sequenceDiagram
+    participant T1 as 마지막 건 a 기록
+    participant DB as DB
+    participant T2 as 마지막 건 b 기록
+
+    rect rgba(239, 68, 68, 0.12)
+    Note over T1,T2: 잠금이 없을 때
+    T1->>DB: a = SENT (아직 커밋 전)
+    T2->>DB: b = SENT (아직 커밋 전)
+    T1->>DB: 남은 건 있나?
+    DB-->>T1: b가 아직 진행 중으로 보임 → 완료 처리 안 함
+    T2->>DB: 남은 건 있나?
+    DB-->>T2: a가 아직 진행 중으로 보임 → 완료 처리 안 함
+    T1->>DB: 커밋
+    T2->>DB: 커밋
+    Note over T1,T2: 남은 건은 0인데 알림은 계속 SENDING
+    end
+```
+
+```mermaid
+sequenceDiagram
+    participant T1 as 마지막 건 a 기록
+    participant DB as DB
+    participant T2 as 마지막 건 b 기록
+
+    rect rgba(34, 197, 94, 0.12)
+    Note over T1,T2: 알림 행을 잠글 때
+    T1->>DB: 알림 행 잠금
+    T2->>DB: 알림 행 잠금 시도
+    Note over T2: a 쪽이 끝날 때까지 대기
+    T1->>DB: a = SENT
+    T1->>DB: 남은 건 있나? → b가 남음, 완료 처리 안 함
+    T1->>DB: 커밋, 잠금 풀림
+    DB-->>T2: 잠금 획득
+    T2->>DB: b = SENT
+    T2->>DB: 남은 건 있나? → 없음 → 알림 COMPLETED
+    T2->>DB: 커밋
+    end
+```
+
 - **알림 행 잠금 이유**: 잠금이 없으면 마지막 두 건이 동시에 기록될 때 각 트랜잭션이 상대 트랜잭션의 미커밋 행을 진행 중으로 읽어 양쪽 모두 완료 전이를 건너뛴다. 알림 행을 잠그면 동일 알림에 대한 결과 기록이 직렬화된다(순차 대기한다). 후행 트랜잭션은 선행 트랜잭션의 커밋 결과를 확인한 뒤 조건을 평가하므로(PostgreSQL 기본 격리 수준인 `READ COMMITTED`는 문장 단위로 최신 커밋 스냅숏을 읽음) 마지막 기록 트랜잭션이 정확히 미종결 건 없음을 감지한다.
 - **동일 트랜잭션 처리 이유**: 결과 기록과 완료 판정이 원자적으로 묶여 두 단계 사이에 프로세스가 비정상 종료되는 틈이 발생하지 않는다. 따라서 누락된 완료 판정을 보정하기 위한 주기적 폴링 쿼리가 필요 없다.
 - **전체 건수 비교 대신 `NOT EXISTS` 사용**: 수신자 확장(Expansion) 진행 중에는 전체 수신자 수가 확정되지 않는다. `NOT EXISTS`는 미종결 행을 1건만 찾으면 즉시 탐색을 중단하며, 미종결 상태만 포함하는 부분 인덱스(partial index)를 타므로 발송 후반부로 갈수록 조회 비용이 0에 수렴한다.

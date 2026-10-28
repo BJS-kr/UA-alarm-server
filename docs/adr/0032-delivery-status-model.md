@@ -37,6 +37,33 @@ Delivery 상태는 6개로 정의하며, 종료 상태는 `SENT`, `FAILED`, `CAN
 
 `PENDING`으로 가는 모든 전이는 상위 알림이 `SENDING` 상태가 아니면 `PENDING` 대신 `CANCELED`로 전이한다(ADR-0017).
 
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> PENDING
+    PENDING --> IN_FLIGHT : 워커가 점유
+    PENDING --> CANCELED : 알림 취소
+    IN_FLIGHT --> SENT : 202
+    IN_FLIGHT --> FAILED : 400, 시도 소진
+    IN_FLIGHT --> PENDING : 안 보낸 게 확실 (500, 503, 429 등)
+    IN_FLIGHT --> UNCONFIRMED : 보냈는지 모름 (타임아웃 등)
+    UNCONFIRMED --> SENT : 조회해 보니 보냈음
+    UNCONFIRMED --> PENDING : 안 보냈음, 시도 남음
+    UNCONFIRMED --> FAILED : 안 보냈음, 시도 소진
+    UNCONFIRMED --> CANCELED : 안 보냈음, 알림 취소 중
+    UNCONFIRMED --> UNCONFIRMED : 조회 실패, 나중에 다시
+    SENT --> [*]
+    FAILED --> [*]
+    CANCELED --> [*]
+
+    classDef done fill:#22c55e33,stroke:#16a34a
+    classDef bad fill:#ef444433,stroke:#dc2626
+    classDef stop fill:#9ca3af33,stroke:#6b7280
+    class SENT done
+    class FAILED bad
+    class CANCELED stop
+```
+
 ### 운영 및 동시성 규칙
 
 - **종료 상태는 `SENT`, `FAILED`, `CANCELED`다.** 한 번 진입하면 다른 상태로 변경되지 않는다. 완료 판정이 확인하는 미종료 상태는 `PENDING`, `IN_FLIGHT`, `UNCONFIRMED`다(ADR-0018).
